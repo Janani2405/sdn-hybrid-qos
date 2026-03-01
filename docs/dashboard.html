@@ -1,0 +1,1402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PROJECT RECALL — SDN QoS Dashboard</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@300;400;500;600;700&family=Orbitron:wght@400;700;900&display=swap');
+
+  :root {
+    --bg0:    #020c14;
+    --bg1:    #041825;
+    --bg2:    #061f30;
+    --bg3:    #0a2d45;
+    --accent: #00d4ff;
+    --green:  #00ff9d;
+    --amber:  #ffb300;
+    --red:    #ff3b5c;
+    --purple: #a855f7;
+    --text:   #c8e8f5;
+    --dim:    #4a7a99;
+    --border: #0d3d5a;
+    --glow:   rgba(0,212,255,0.15);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg0);
+    color: var(--text);
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 14px;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── Scanline overlay ── */
+  body::before {
+    content: '';
+    position: fixed; inset: 0; z-index: 9999;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.03) 2px,
+      rgba(0,0,0,0.03) 4px
+    );
+    pointer-events: none;
+  }
+
+  /* ── Header ── */
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 24px;
+    height: 56px;
+    background: linear-gradient(90deg, var(--bg1) 0%, #030e1a 100%);
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 100;
+  }
+  .logo {
+    display: flex; align-items: center; gap: 12px;
+  }
+  .logo-icon {
+    width: 32px; height: 32px;
+    border: 2px solid var(--accent);
+    border-radius: 4px;
+    display: grid; place-items: center;
+    position: relative;
+    box-shadow: 0 0 12px var(--glow);
+  }
+  .logo-icon::before {
+    content: '';
+    width: 16px; height: 16px;
+    border: 2px solid var(--accent);
+    border-radius: 50%;
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%,100% { transform: scale(1); opacity: 1; }
+    50%      { transform: scale(0.8); opacity: 0.5; }
+  }
+  .logo-text { font-family: 'Orbitron', monospace; font-size: 14px; font-weight: 700; color: var(--accent); letter-spacing: 2px; }
+  .logo-sub  { font-size: 10px; color: var(--dim); letter-spacing: 3px; text-transform: uppercase; }
+
+  .header-right { display: flex; align-items: center; gap: 20px; }
+  .status-badge {
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 12px;
+    border: 1px solid;
+    border-radius: 2px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 1px;
+  }
+  .status-badge.online  { border-color: var(--green); color: var(--green); }
+  .status-badge.offline { border-color: var(--red);   color: var(--red);   }
+  .status-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: currentColor;
+    animation: blink 1.4s ease-in-out infinite;
+  }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
+
+  .clock { font-family: 'Share Tech Mono', monospace; font-size: 13px; color: var(--dim); }
+
+  /* ── Layout ── */
+  .layout {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    grid-template-rows: auto 1fr auto;
+    gap: 0;
+    height: calc(100vh - 56px);
+  }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    grid-row: 1 / -1;
+    background: var(--bg1);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  /* ── Main area ── */
+  .main {
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    overflow: hidden;
+  }
+
+  /* ── KPI bar ── */
+  .kpi-bar {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 1px;
+    background: var(--border);
+    border-bottom: 1px solid var(--border);
+  }
+  .kpi {
+    background: var(--bg1);
+    padding: 14px 16px;
+    position: relative;
+    overflow: hidden;
+  }
+  .kpi::before {
+    content: '';
+    position: absolute; bottom: 0; left: 0; right: 0;
+    height: 2px;
+    background: var(--accent);
+    transform: scaleX(0);
+    transform-origin: left;
+    transition: transform 0.6s ease;
+  }
+  .kpi.updated::before { transform: scaleX(1); }
+  .kpi-label { font-size: 10px; letter-spacing: 2px; color: var(--dim); text-transform: uppercase; margin-bottom: 4px; }
+  .kpi-value { font-family: 'Orbitron', monospace; font-size: 22px; font-weight: 700; line-height: 1; }
+  .kpi-unit  { font-size: 11px; color: var(--dim); margin-top: 2px; }
+  .kpi.accent { --kpi-color: var(--accent); }
+  .kpi.green  { --kpi-color: var(--green);  }
+  .kpi.amber  { --kpi-color: var(--amber);  }
+  .kpi.red    { --kpi-color: var(--red);    }
+  .kpi.purple { --kpi-color: var(--purple); }
+  .kpi-value  { color: var(--kpi-color); }
+
+  /* ── Content grid ── */
+  .content {
+    display: grid;
+    grid-template-columns: 1.2fr 0.8fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 1px;
+    background: var(--border);
+    overflow: hidden;
+  }
+
+  /* Topology spans full left column height */
+  /* .panel.topo-panel {
+    grid-row: 1 / -1;
+  } */
+
+  /* ── Panel ── */
+  .panel {
+    background: var(--bg1);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+  }
+  .panel.wide { grid-column: 1 / -1; }
+  .panel-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(90deg, var(--bg2), var(--bg1));
+    flex-shrink: 0;
+  }
+  .panel-title {
+    font-family: 'Orbitron', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    color: var(--accent);
+    text-transform: uppercase;
+  }
+  .panel-badge {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px;
+    padding: 2px 8px;
+    border: 1px solid var(--dim);
+    border-radius: 2px;
+    color: var(--dim);
+  }
+  .panel-body {
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* ── Universal panel fullscreen ── */
+  .panel-expandable.fullscreen {
+    position: fixed;
+    inset: 0;
+    z-index: 999;
+    width: 100vw !important;
+    height: 100vh !important;
+    border-radius: 0;
+    background: var(--bg0);
+  }
+  .panel-expandable.fullscreen .panel-body {
+    height: calc(100vh - 42px) !important;
+  }
+  .fullscreen-btn {
+    background: none;
+    border: 1px solid var(--dim);
+    border-radius: 2px;
+    color: var(--dim);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px;
+    padding: 2px 8px;
+    cursor: pointer;
+    letter-spacing: 1px;
+    transition: border-color 0.2s, color 0.2s;
+    margin-left: 8px;
+    flex-shrink: 0;
+  }
+  .fullscreen-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .fullscreen-btn.active { border-color: var(--red); color: var(--red); 
+    width: 100%; height: 100%;
+    display: block;
+  }
+
+  /* ── Charts ── */
+  .chart-wrap {
+    padding: 12px;
+    height: 100%;
+    position: relative;
+  }
+  canvas.chart {
+    width: 100% !important;
+    height: 100% !important;
+  }
+
+  /* ── Flow table ── */
+  .flow-table-wrap {
+    overflow-y: auto;
+    height: 100%;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px;
+  }
+  th {
+    position: sticky; top: 0;
+    background: var(--bg2);
+    color: var(--dim);
+    padding: 8px 12px;
+    text-align: left;
+    letter-spacing: 1px;
+    font-weight: 400;
+    border-bottom: 1px solid var(--border);
+  }
+  td {
+    padding: 7px 12px;
+    border-bottom: 1px solid rgba(13,61,90,0.5);
+    color: var(--text);
+    transition: background 0.3s;
+  }
+  tr:hover td { background: var(--bg3); }
+  .td-good   { color: var(--green); }
+  .td-warn   { color: var(--amber); }
+  .td-crit   { color: var(--red);   }
+
+  /* ── Event log ── */
+  .event-log {
+    overflow-y: auto;
+    height: 100%;
+    padding: 8px;
+  }
+  .event-item {
+    display: flex; gap: 10px;
+    padding: 6px 8px;
+    margin-bottom: 4px;
+    border-left: 2px solid var(--dim);
+    background: rgba(255,255,255,0.02);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px;
+    animation: slideIn 0.3s ease;
+  }
+  @keyframes slideIn { from { opacity:0; transform: translateX(-8px); } }
+  .event-item.info    { border-color: var(--accent); }
+  .event-item.success { border-color: var(--green);  }
+  .event-item.warning { border-color: var(--amber);  }
+  .event-item.error   { border-color: var(--red);    }
+  .event-time   { color: var(--dim); flex-shrink: 0; width: 70px; }
+  .event-cat    { color: var(--accent); flex-shrink: 0; width: 70px; }
+  .event-msg    { color: var(--text); }
+
+  /* ── Sidebar widgets ── */
+  .widget-title {
+    font-family: 'Orbitron', monospace;
+    font-size: 10px;
+    letter-spacing: 2px;
+    color: var(--dim);
+    text-transform: uppercase;
+    margin-bottom: 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .switch-card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 12px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    position: relative;
+    overflow: hidden;
+  }
+  .switch-card::before {
+    content: '';
+    position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+    background: var(--green);
+  }
+  .switch-card.selected  { border-color: var(--accent); background: var(--bg3); }
+  .switch-card:hover     { border-color: var(--accent); }
+  .switch-card.offline::before { background: var(--red); }
+
+  .sw-name  { font-family: 'Orbitron', monospace; font-size: 13px; color: var(--accent); margin-bottom: 6px; }
+  .sw-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+  .sw-stat  { font-size: 11px; color: var(--dim); }
+  .sw-val   { color: var(--text); font-weight: 600; }
+
+  .gauge-row {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 6px;
+  }
+  .gauge-label { width: 70px; font-size: 11px; color: var(--dim); }
+  .gauge-bar   { flex: 1; height: 4px; background: var(--bg3); border-radius: 2px; overflow: hidden; }
+  .gauge-fill  { height: 100%; border-radius: 2px; transition: width 0.5s ease, background 0.5s; }
+  .gauge-val   { width: 50px; text-align: right; font-family: 'Share Tech Mono', monospace; font-size: 11px; }
+
+  /* ── Bottom bar ── */
+  .bottom-bar {
+    display: flex; align-items: center; gap: 16px;
+    padding: 6px 16px;
+    background: var(--bg1);
+    border-top: 1px solid var(--border);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px;
+    color: var(--dim);
+    letter-spacing: 1px;
+  }
+  .bb-item { display: flex; align-items: center; gap: 6px; }
+  .bb-dot  { width: 5px; height: 5px; border-radius: 50%; background: var(--green); }
+
+  /* ── Topology node/link styles ── */
+  .topo-loading {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 12px;
+    color: var(--dim);
+    font-family: 'Share Tech Mono', monospace;
+  }
+  .spinner {
+    width: 32px; height: 32px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: var(--bg0); }
+  ::-webkit-scrollbar-thumb { background: var(--bg3); border-radius: 2px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+  /* ── Responsive ── */
+  @media (max-width: 1200px) {
+    .kpi-bar { grid-template-columns: repeat(3, 1fr); }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════ HEADER ═══════════════════ -->
+<header>
+  <div class="logo">
+    <div class="logo-icon"></div>
+    <div>
+      <div class="logo-text">PROJECT RECALL</div>
+      <div class="logo-sub">SDN QoS Intelligence Layer — Phase 1</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <div id="controller-status" class="status-badge offline">
+      <div class="status-dot"></div>
+      <span>CONTROLLER OFFLINE</span>
+    </div>
+    <div class="clock" id="clock">--:--:--</div>
+  </div>
+</header>
+
+<!-- ═══════════════════ LAYOUT ═══════════════════ -->
+<div class="layout">
+
+  <!-- ──────── SIDEBAR ──────── -->
+  <aside class="sidebar">
+    <div>
+      <div class="widget-title">Active Switches</div>
+      <div id="switch-list">
+        <div class="topo-loading">
+          <div class="spinner"></div>
+          <span>Waiting for controller...</span>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="widget-title">Selected Switch Metrics</div>
+      <div id="gauge-panel">
+        <div id="gauge-bw"     class="gauge-row"><span class="gauge-label">BW Rx</span><div class="gauge-bar"><div class="gauge-fill" style="width:0%;background:var(--accent)"></div></div><span class="gauge-val">0 Mbps</span></div>
+        <div id="gauge-tx"     class="gauge-row"><span class="gauge-label">BW Tx</span><div class="gauge-bar"><div class="gauge-fill" style="width:0%;background:var(--green)"></div></div><span class="gauge-val">0 Mbps</span></div>
+        <div id="gauge-lat"    class="gauge-row"><span class="gauge-label">Latency</span><div class="gauge-bar"><div class="gauge-fill" style="width:0%;background:var(--amber)"></div></div><span class="gauge-val">0 ms</span></div>
+        <div id="gauge-jitter" class="gauge-row"><span class="gauge-label">Jitter</span><div class="gauge-bar"><div class="gauge-fill" style="width:0%;background:var(--purple)"></div></div><span class="gauge-val">0 ms</span></div>
+        <div id="gauge-loss"   class="gauge-row"><span class="gauge-label">Loss</span><div class="gauge-bar"><div class="gauge-fill" style="width:0%;background:var(--red)"></div></div><span class="gauge-val">0%</span></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="widget-title">DQN Reward Signal</div>
+      <div style="text-align:center; padding:12px 0">
+        <div style="font-family:'Orbitron',monospace; font-size:32px; font-weight:900" id="reward-display">—</div>
+        <div style="font-size:11px; color:var(--dim); margin-top:4px">Σ reward (preview for Phase 4)</div>
+      </div>
+    </div>
+
+    <div>
+      <div class="widget-title">Dataset Status</div>
+      <div style="font-family:'Share Tech Mono',monospace; font-size:11px; color:var(--dim)">
+        <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+          <span>Samples collected</span>
+          <span style="color:var(--green)" id="ds-samples">0</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+          <span>Poll interval</span>
+          <span style="color:var(--text)">2s</span>
+        </div>
+        <div style="display:flex;justify-content:space-between">
+          <span>Status</span>
+          <span id="ds-status" style="color:var(--amber)">WAITING</span>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ──────── MAIN ──────── -->
+  <div class="main">
+
+    <!-- KPI Bar -->
+    <div class="kpi-bar">
+      <div class="kpi accent">
+        <div class="kpi-label">Total Bandwidth</div>
+        <div class="kpi-value" id="kpi-bw">0.00</div>
+        <div class="kpi-unit">Mbps aggregate</div>
+      </div>
+      <div class="kpi green">
+        <div class="kpi-label">Avg Latency</div>
+        <div class="kpi-value" id="kpi-lat">—</div>
+        <div class="kpi-unit">milliseconds</div>
+      </div>
+      <div class="kpi amber">
+        <div class="kpi-label">Avg Packet Loss</div>
+        <div class="kpi-value" id="kpi-loss">—</div>
+        <div class="kpi-unit">percent</div>
+      </div>
+      <div class="kpi red">
+        <div class="kpi-label">Active Switches</div>
+        <div class="kpi-value" id="kpi-switches">0</div>
+        <div class="kpi-unit">connected</div>
+      </div>
+      <div class="kpi purple">
+        <div class="kpi-label">Total Flows</div>
+        <div class="kpi-value" id="kpi-flows">0</div>
+        <div class="kpi-unit">active rules</div>
+      </div>
+    </div>
+
+    <!-- Content grid -->
+    <div class="content">
+
+      <!-- Topology — full left column -->
+      <div class="panel topo-panel panel-expandable" id="topo-panel">
+        <div class="panel-header">
+          <span class="panel-title">⬡ Network Topology</span>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span class="panel-badge" id="topo-badge">0 nodes · 0 links</span>
+            <button class="fullscreen-btn" onclick="expandPanel('topo-panel')">⛶ EXPAND</button>
+          </div>
+        </div>
+        <div class="panel-body">
+          <canvas id="topology-canvas"></canvas>
+          <div id="topo-overlay" class="topo-loading">
+            <div class="spinner"></div>
+            <span>Discovering topology...</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Bandwidth chart — top right -->
+      <div class="panel panel-expandable" id="bw-panel">
+        <div class="panel-header">
+          <span class="panel-title">◈ Bandwidth History</span>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span class="panel-badge">60s window</span>
+            <button class="fullscreen-btn" onclick="expandPanel('bw-panel')">⛶ EXPAND</button>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="chart-wrap">
+            <canvas id="bw-chart" class="chart"></canvas>
+          </div>
+        </div>
+      </div>
+
+        <!-- Latency/Jitter -->
+        <div class="panel panel-expandable" id="lat-panel" style="flex:1;display:flex;flex-direction:column;border-bottom:1px solid var(--border);overflow:hidden;background:var(--bg1);">
+          <div class="panel-header">
+            <span class="panel-title">◈ Latency & Jitter</span>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span class="panel-badge">live</span>
+              <button class="fullscreen-btn" onclick="expandPanel('lat-panel')">⛶ EXPAND</button>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="chart-wrap">
+              <canvas id="lat-chart" class="chart"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <!-- Flow table -->
+        <div class="panel panel-expandable" id="flow-panel" style="flex:1;display:flex;flex-direction:column;overflow:hidden;background:var(--bg1);">
+          <div class="panel-header">
+            <span class="panel-title">▦ Flow Table</span>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span class="panel-badge" id="flow-count-badge">0 entries</span>
+              <button class="fullscreen-btn" onclick="expandPanel('flow-panel')">⛶ EXPAND</button>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="flow-table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>SWITCH</th>
+                    <th>FLOW KEY</th>
+                    <th>PACKETS</th>
+                    <th>BYTES</th>
+                    <th>DURATION</th>
+                  </tr>
+                </thead>
+                <tbody id="flow-tbody">
+                  <tr><td colspan="5" style="text-align:center;color:var(--dim);padding:20px">No flows yet</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+
+    </div><!-- /content -->
+
+    <!-- Bottom bar -->
+    <div class="bottom-bar">
+      <div class="bb-item"><div class="bb-dot"></div><span>MININET TOPOLOGY ACTIVE</span></div>
+      <div class="bb-item"><div class="bb-dot" style="background:var(--accent)"></div><span>RYU CONTROLLER v4</span></div>
+      <div class="bb-item"><div class="bb-dot" style="background:var(--purple)"></div><span>OPENFLOW 1.3</span></div>
+      <div style="margin-left:auto; font-size:10px;" id="last-update">LAST UPDATE: —</div>
+    </div>
+
+  </div><!-- /main -->
+
+</div><!-- /layout -->
+
+<!-- ════════════════════ EVENT LOG (floating) ════════════════════ -->
+<div style="position:fixed; bottom:32px; right:16px; width:320px; max-height:220px;
+            background:var(--bg1); border:1px solid var(--border); z-index:50;
+            display:flex; flex-direction:column; border-radius:4px;">
+  <div style="padding:8px 12px; border-bottom:1px solid var(--border);
+              font-family:'Orbitron',monospace; font-size:10px; letter-spacing:2px; color:var(--accent)">
+    ▸ EVENT LOG
+  </div>
+  <div class="event-log" id="event-log" style="max-height:180px"></div>
+</div>
+
+<!-- Chart.js -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+
+<script>
+// ════════════════════════════════════════════════════════════════
+//  CONFIG
+// ════════════════════════════════════════════════════════════════
+const API   = 'http://127.0.0.1:8080/qos/api/v1';
+const POLL  = 2000;  // ms
+const MAX_PTS = 60;  // chart history points
+
+// ════════════════════════════════════════════════════════════════
+//  STATE
+// ════════════════════════════════════════════════════════════════
+let state = {
+  online:        false,
+  switches:      {},   // dpid -> latest metric
+  topology:      { switches: [], links: [] },
+  flows:         {},
+  selectedDpid:  null,
+  totalSamples:  0,
+  chartData: {
+    labels:   [],
+    bwRx:     [],
+    bwTx:     [],
+    latency:  [],
+    jitter:   [],
+  }
+};
+
+// ════════════════════════════════════════════════════════════════
+//  CLOCK
+// ════════════════════════════════════════════════════════════════
+setInterval(() => {
+  document.getElementById('clock').textContent =
+    new Date().toLocaleTimeString('en-GB', {hour12:false});
+}, 1000);
+
+// ════════════════════════════════════════════════════════════════
+//  API FETCH HELPERS
+// ════════════════════════════════════════════════════════════════
+async function apiFetch(path) {
+  try {
+    const r = await fetch(`${API}/${path}`, {
+      signal: AbortSignal.timeout(3000)
+    });
+    return r.ok ? r.json() : null;
+  } catch { return null; }
+}
+
+// ════════════════════════════════════════════════════════════════
+//  CHARTS SETUP
+// ════════════════════════════════════════════════════════════════
+const chartDefaults = {
+  responsive: true,
+  maintainAspectRatio: false,
+  animation: { duration: 300 },
+  plugins: { legend: { labels: { color: '#4a7a99', font: { size: 11 } } } },
+  scales: {
+    x: {
+      ticks: { color: '#4a7a99', maxTicksLimit: 8, font:{size:9} },
+      grid:  { color: 'rgba(13,61,90,0.5)' }
+    },
+    y: {
+      ticks: { color: '#4a7a99', font:{size:9} },
+      grid:  { color: 'rgba(13,61,90,0.5)' }
+    }
+  }
+};
+
+const bwChart = new Chart(document.getElementById('bw-chart'), {
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [
+      {
+        label: 'BW Rx (Mbps)',
+        data: [],
+        borderColor: '#00d4ff',
+        backgroundColor: 'rgba(0,212,255,0.1)',
+        fill: true,
+        tension: 0.4,
+        borderWidth: 2,
+        pointRadius: 0,
+      },
+      {
+        label: 'BW Tx (Mbps)',
+        data: [],
+        borderColor: '#00ff9d',
+        backgroundColor: 'rgba(0,255,157,0.06)',
+        fill: true,
+        tension: 0.4,
+        borderWidth: 2,
+        pointRadius: 0,
+      }
+    ]
+  },
+  options: { ...chartDefaults }
+});
+
+const latChart = new Chart(document.getElementById('lat-chart'), {
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [
+      {
+        label: 'Latency (ms)',
+        data: [],
+        borderColor: '#ffb300',
+        backgroundColor: 'rgba(255,179,0,0.08)',
+        fill: true,
+        tension: 0.4,
+        borderWidth: 2,
+        pointRadius: 0,
+      },
+      {
+        label: 'Jitter (ms)',
+        data: [],
+        borderColor: '#a855f7',
+        backgroundColor: 'rgba(168,85,247,0.06)',
+        fill: true,
+        tension: 0.4,
+        borderWidth: 2,
+        pointRadius: 0,
+      }
+    ]
+  },
+  options: { ...chartDefaults }
+});
+
+function pushChartData(time, bwRx, bwTx, lat, jitter) {
+  const ts = time.split('T')[1]?.split('.')[0] ?? time;
+  [bwChart, latChart].forEach(c => {
+    c.data.labels.push(ts);
+    if (c.data.labels.length > MAX_PTS) c.data.labels.shift();
+  });
+  bwChart.data.datasets[0].data.push(bwRx);
+  bwChart.data.datasets[1].data.push(bwTx);
+  latChart.data.datasets[0].data.push(lat);
+  latChart.data.datasets[1].data.push(jitter);
+  [bwChart.data.datasets[0].data,
+   bwChart.data.datasets[1].data,
+   latChart.data.datasets[0].data,
+   latChart.data.datasets[1].data].forEach(arr => {
+    if (arr.length > MAX_PTS) arr.shift();
+  });
+  bwChart.update();
+  latChart.update();
+}
+
+// ════════════════════════════════════════════════════════════════
+//  TOPOLOGY CANVAS
+// ════════════════════════════════════════════════════════════════
+const topoCanvas = document.getElementById('topology-canvas');
+const topoCtx    = topoCanvas.getContext('2d');
+let topoNodes = [];   // { id, x, y, label, type, active }
+let topoLinks = [];   // { source, target }
+let animFrame = 0;
+
+// ── Universal panel expand/collapse ──────────────────────────
+let expandedPanel = null;
+
+function expandPanel(panelId) {
+  const panel = document.getElementById(panelId);
+  const btn   = panel.querySelector('.fullscreen-btn');
+  const isNowFs = !panel.classList.contains('fullscreen');
+
+  // collapse any currently expanded panel first
+  if (expandedPanel && expandedPanel !== panel) {
+    expandedPanel.classList.remove('fullscreen');
+    const prevBtn = expandedPanel.querySelector('.fullscreen-btn');
+    if (prevBtn) { prevBtn.textContent = '⛶ EXPAND'; prevBtn.classList.remove('active'); }
+    expandedPanel = null;
+  }
+
+  panel.classList.toggle('fullscreen', isNowFs);
+  btn.textContent = isNowFs ? '✕ COLLAPSE' : '⛶ EXPAND';
+  btn.classList.toggle('active', isNowFs);
+  expandedPanel = isNowFs ? panel : null;
+
+  // resize topology canvas if it's involved
+  setTimeout(() => {
+    resizeCanvas();
+    topoCache = { swCount: -1, lkCount: -1 }; // force layout recalc for new size
+    if (state.topology?.switches?.length) buildTopoNodes(state.topology);
+    [bwChart, latChart].forEach(c => c.resize());
+  }, 60);
+}
+
+// ESC collapses any expanded panel
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && expandedPanel) {
+    const id = expandedPanel.id;
+    expandPanel(id);
+  }
+});
+
+
+
+function resizeCanvas() {
+  const rect = topoCanvas.parentElement.getBoundingClientRect();
+  topoCanvas.width  = rect.width;
+  topoCanvas.height = rect.height;
+}
+window.addEventListener('resize', () => { resizeCanvas(); renderTopology(); });
+resizeCanvas();
+
+// ── Topology layout cache ─────────────────────────────────────
+let topoCache = { swCount: -1, lkCount: -1 };
+
+function buildTopoNodes(topology) {
+  const sw    = topology.switches || [];
+  const lk    = topology.links    || [];
+  const hosts = topology.hosts    || [];
+
+  // ── Skip rebuild if nothing changed ──
+  const swCount = sw.length, lkCount = lk.length;
+  if (swCount === topoCache.swCount && lkCount === topoCache.lkCount && topoNodes.length > 0) return;
+  topoCache.swCount = swCount;
+  topoCache.lkCount = lkCount;
+
+  if (swCount === 0) { topoNodes = []; topoLinks = []; return; }
+
+  const W = topoCanvas.width;
+  const H = topoCanvas.height;
+  const cx = W / 2;
+
+  // ── Build adjacency ──
+  const adj = {};
+  sw.forEach(s => { adj[s.dpid] = new Set(); });
+  lk.forEach(l => {
+    if (adj[l.src_dpid]) adj[l.src_dpid].add(l.dst_dpid);
+    if (adj[l.dst_dpid]) adj[l.dst_dpid].add(l.src_dpid);
+  });
+
+  const degrees  = sw.map(s => ({ dpid: s.dpid, deg: (adj[s.dpid]||new Set()).size }));
+  const leafCount = degrees.filter(d => d.deg === 1).length;
+
+  // ── Always use tree layout ──
+  // Find root = highest degree node (core switch)
+  const root = degrees.reduce((a, b) => a.deg >= b.deg ? a : b).dpid;
+
+  // BFS to build parent→children map
+  const children = {};
+  sw.forEach(s => { children[s.dpid] = []; });
+  const visited = new Set([root]);
+  const bfsQ = [root];
+  while (bfsQ.length) {
+    const cur = bfsQ.shift();
+    [...(adj[cur]||[])].forEach(nb => {
+      if (!visited.has(nb)) {
+        visited.add(nb);
+        children[cur].push(nb);
+        bfsQ.push(nb);
+      }
+    });
+  }
+  // attach any disconnected nodes under root
+  sw.forEach(s => {
+    if (!visited.has(s.dpid)) {
+      children[root].push(s.dpid);
+      children[s.dpid] = children[s.dpid] || [];
+    }
+  });
+
+  // Post-order: compute subtree leaf count (= width units)
+  const leafW = {};
+  const postOrder = (() => {
+    const result = [], stk = [root];
+    while (stk.length) { const n = stk.pop(); result.push(n); (children[n]||[]).forEach(c => stk.push(c)); }
+    return result.reverse();
+  })();
+  postOrder.forEach(node => {
+    const ch = children[node]||[];
+    leafW[node] = ch.length === 0 ? 1 : ch.reduce((s,c) => s + leafW[c], 0);
+  });
+
+  // Compute depth of each node
+  const depth = { [root]: 0 };
+  let maxDepth = 0;
+  const bfsD = [root];
+  while (bfsD.length) {
+    const node = bfsD.shift();
+    (children[node]||[]).forEach(c => {
+      depth[c] = depth[node] + 1;
+      maxDepth = Math.max(maxDepth, depth[c]);
+      bfsD.push(c);
+    });
+  }
+
+  // ── Decide node size based on total switch count ──
+  // Scale down for large topologies so nodes don't overlap
+  const nodeR = swCount <= 10  ? 20
+              : swCount <= 30  ? 16
+              : swCount <= 60  ? 13
+              : swCount <= 127 ? 10
+              : 8;
+
+  // ── Compute Y tier spacing ──
+  // Reserve space at bottom for hosts if any
+  const hasHosts  = hosts.length > 0;
+  const hostRowH  = hasHosts ? nodeR * 4 : 0;
+  const topPad    = nodeR * 3;
+  const botPad    = nodeR * 2 + hostRowH;
+  const usableH   = H - topPad - botPad;
+  const tierH     = maxDepth > 0 ? usableH / maxDepth : usableH;
+
+  // ── Compute X positions using subtree widths ──
+  const padX    = nodeR * 2;
+  const usableW = W - padX * 2;
+  const xScale  = usableW / leafW[root];
+
+  // BFS to assign x offset (left boundary of each node's subtree)
+  const xOff = { [root]: 0 };
+  const bfsX = [root];
+  while (bfsX.length) {
+    const node = bfsX.shift();
+    let cursor = xOff[node];
+    (children[node]||[]).forEach(child => {
+      xOff[child] = cursor;
+      cursor += leafW[child];
+      bfsX.push(child);
+    });
+  }
+
+  // Final position: x = left + half subtree width, y = tier
+  const swPositions = {};
+  sw.forEach(s => {
+    swPositions[s.dpid] = {
+      x: padX + (xOff[s.dpid] + leafW[s.dpid] / 2) * xScale,
+      y: topPad + (depth[s.dpid] ?? 0) * tierH,
+    };
+  });
+
+  // ── Build switch nodes ──
+  const dpidToLabel = {};
+  sw.forEach((s, i) => { dpidToLabel[s.dpid] = `s${i+1}`; });
+
+  const switchNodes = sw.map(s => ({
+    id:     s.dpid,
+    x:      swPositions[s.dpid].x,
+    y:      swPositions[s.dpid].y,
+    label:  dpidToLabel[s.dpid],
+    type:   'switch',
+    active: s.status === 'active',
+    r:      nodeR,
+  }));
+
+  // ── Build host nodes below their leaf switch ──
+  const hostsBySw = {};
+  hosts.forEach(h => {
+    const dpid = h.port?.dpid; if (!dpid) return;
+    if (!hostsBySw[dpid]) hostsBySw[dpid] = [];
+    hostsBySw[dpid].push(h);
+  });
+
+  const hostR = Math.max(nodeR * 0.6, 6);
+  const hostNodes = []; let hCount = 0;
+  Object.entries(hostsBySw).forEach(([swDpid, hList]) => {
+    const swPos = swPositions[swDpid]; if (!swPos) return;
+    const total  = hList.length;
+    const spread = Math.min(nodeR * 3, (nodeR * 2 * total) / Math.max(total, 1));
+    hList.forEach((h, i) => {
+      hostNodes.push({
+        id:     h.mac,
+        x:      swPos.x + (i - (total-1)/2) * spread,
+        y:      swPos.y + nodeR * 3.5,
+        label:  `h${++hCount}`,
+        type:   'host',
+        mac:    h.mac,
+        ip:     h.ipv4?.[0] || '',
+        swDpid,
+        active: true,
+        r:      hostR,
+      });
+    });
+  });
+
+  topoNodes = [...switchNodes, ...hostNodes];
+  topoLinks = [
+    ...lk.map(l => ({ source: l.src_dpid, target: l.dst_dpid, type: 'sw-link' })),
+    ...hostNodes.map(h => ({ source: h.swDpid, target: h.id, type: 'host-link' })),
+  ];
+
+  document.getElementById('topo-badge').textContent =
+    `${sw.length} sw · ${hostNodes.length} hosts · ${lk.length} links`;
+}
+
+function renderTopology() {
+  const W = topoCanvas.width, H = topoCanvas.height;
+  topoCtx.clearRect(0, 0, W, H);
+  if (topoNodes.length === 0) return;
+
+  // Draw links
+  topoLinks.forEach(link => {
+    const src = topoNodes.find(n => n.id === link.source);
+    const tgt = topoNodes.find(n => n.id === link.target);
+    if (!src || !tgt) return;
+
+    const isHostLink = link.type === 'host-link';
+    topoCtx.beginPath();
+    topoCtx.moveTo(src.x, src.y);
+    topoCtx.lineTo(tgt.x, tgt.y);
+    topoCtx.strokeStyle = isHostLink ? 'rgba(0,255,157,0.2)' : 'rgba(0,212,255,0.3)';
+    topoCtx.lineWidth   = isHostLink ? 1 : 1.5;
+    if (isHostLink) { topoCtx.setLineDash([4, 3]); } else { topoCtx.setLineDash([]); }
+    topoCtx.stroke();
+    topoCtx.setLineDash([]);
+
+    // Animate packet dot on switch links only
+    if (!isHostLink) {
+      const t = ((Date.now() / 1000) + (src.x * 0.01)) % 1;
+      const px = src.x + (tgt.x - src.x) * t;
+      const py = src.y + (tgt.y - src.y) * t;
+      topoCtx.beginPath();
+      topoCtx.arc(px, py, 2.5, 0, Math.PI*2);
+      topoCtx.fillStyle = '#00ff9d';
+      topoCtx.shadowColor = '#00ff9d';
+      topoCtx.shadowBlur = 6;
+      topoCtx.fill();
+      topoCtx.shadowBlur = 0;
+    }
+  });
+
+  // Draw nodes
+  topoNodes.forEach(node => {
+    const isSelected = node.id === state.selectedDpid;
+
+    if (node.type === 'host') {
+      // ── HOST: small circle with H label ──
+      const r     = node.r || 8;
+      const fSize = r >= 10 ? 9 : 7;
+      // glow
+      const grad = topoCtx.createRadialGradient(node.x, node.y, 0, node.x, node.y, r * 2.5);
+      grad.addColorStop(0, 'rgba(0,255,157,0.15)');
+      grad.addColorStop(1, 'rgba(0,255,157,0)');
+      topoCtx.beginPath();
+      topoCtx.arc(node.x, node.y, r * 2.5, 0, Math.PI*2);
+      topoCtx.fillStyle = grad; topoCtx.fill();
+      // circle
+      topoCtx.beginPath();
+      topoCtx.arc(node.x, node.y, r, 0, Math.PI*2);
+      topoCtx.fillStyle = 'rgba(0,30,20,0.9)';
+      topoCtx.fill();
+      topoCtx.strokeStyle = '#00ff9d';
+      topoCtx.lineWidth = 1.5;
+      topoCtx.stroke();
+      // H label
+      topoCtx.fillStyle = '#00ff9d';
+      topoCtx.font = `bold ${fSize}px 'Orbitron', monospace`;
+      topoCtx.textAlign = 'center'; topoCtx.textBaseline = 'middle';
+      topoCtx.fillText(node.label, node.x, node.y);
+      // IP below
+      if (node.ip) {
+        topoCtx.fillStyle = 'rgba(0,255,157,0.5)';
+        topoCtx.font = `8px 'Share Tech Mono', monospace`;
+        topoCtx.fillText(node.ip, node.x, node.y + r + 9);
+      }
+
+    } else {
+      // ── SWITCH: hexagon ──
+      const color  = node.active ? '#00d4ff' : '#ff3b5c';
+      const nodeR  = node.r || 18;
+      const r      = isSelected ? nodeR * 1.25 : nodeR;
+      const fSize  = nodeR >= 16 ? 11 : nodeR >= 12 ? 9 : 7;
+      // glow
+      if (node.active) {
+        const grad = topoCtx.createRadialGradient(node.x, node.y, 0, node.x, node.y, r * 2);
+        grad.addColorStop(0, `rgba(0,212,255,0.3)`);
+        grad.addColorStop(1, `rgba(0,212,255,0)`);
+        topoCtx.beginPath();
+        topoCtx.arc(node.x, node.y, r * 2, 0, Math.PI*2);
+        topoCtx.fillStyle = grad; topoCtx.fill();
+      }
+      // hexagon
+      topoCtx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a = (Math.PI / 3) * i - Math.PI / 6;
+        const px = node.x + r * Math.cos(a);
+        const py = node.y + r * Math.sin(a);
+        i === 0 ? topoCtx.moveTo(px, py) : topoCtx.lineTo(px, py);
+      }
+      topoCtx.closePath();
+      topoCtx.fillStyle = isSelected ? 'rgba(0,212,255,0.2)' : 'rgba(4,24,37,0.9)';
+      topoCtx.fill();
+      topoCtx.strokeStyle = color;
+      topoCtx.lineWidth = isSelected ? 2.5 : 1.5;
+      topoCtx.stroke();
+      // label
+      topoCtx.fillStyle = color;
+      topoCtx.font = `bold ${fSize}px 'Orbitron', monospace`;
+      topoCtx.textAlign = 'center'; topoCtx.textBaseline = 'middle';
+      topoCtx.fillText(node.label, node.x, node.y);
+      // status dot
+      topoCtx.beginPath();
+      topoCtx.arc(node.x + r * 0.6, node.y - r * 0.6, 3, 0, Math.PI*2);
+      topoCtx.fillStyle = node.active ? '#00ff9d' : '#ff3b5c';
+      topoCtx.fill();
+    }
+  });
+}
+
+function animateTopology() {
+  renderTopology();
+  requestAnimationFrame(animateTopology);
+}
+animateTopology();
+
+// Click to select node
+topoCanvas.addEventListener('click', e => {
+  const rect = topoCanvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  topoNodes.forEach(n => {
+    if (Math.hypot(mx - n.x, my - n.y) < 28) {
+      state.selectedDpid = n.id;
+      updateGauges();
+    }
+  });
+});
+
+// ════════════════════════════════════════════════════════════════
+//  GAUGE UPDATE
+// ════════════════════════════════════════════════════════════════
+function updateGauges() {
+  const m = state.switches[state.selectedDpid];
+  if (!m) return;
+  const MAX = { bw: 100, lat: 200, jitter: 50, loss: 10 };
+  setGauge('bw',     m.bw_rx_mbps, MAX.bw,     `${m.bw_rx_mbps?.toFixed(2)} Mbps`, '#00d4ff');
+  setGauge('tx',     m.bw_tx_mbps, MAX.bw,     `${m.bw_tx_mbps?.toFixed(2)} Mbps`, '#00ff9d');
+  setGauge('lat',    m.latency_ms, MAX.lat,    `${m.latency_ms?.toFixed(1)} ms`,   '#ffb300');
+  setGauge('jitter', m.jitter_ms,  MAX.jitter, `${m.jitter_ms?.toFixed(1)} ms`,    '#a855f7');
+  setGauge('loss',   m.loss_pct,   MAX.loss,   `${m.loss_pct?.toFixed(2)}%`,       '#ff3b5c');
+
+  const reward = m.reward ?? 0;
+  const rewardEl = document.getElementById('reward-display');
+  rewardEl.textContent = reward.toFixed(4);
+  rewardEl.style.color = reward > 0 ? '#00ff9d' : reward > -0.3 ? '#ffb300' : '#ff3b5c';
+}
+
+function setGauge(id, val, max, label, color) {
+  const row  = document.getElementById(`gauge-${id}`);
+  const fill = row.querySelector('.gauge-fill');
+  const valEl= row.querySelector('.gauge-val');
+  const pct  = Math.min((val / max) * 100, 100);
+  fill.style.width      = `${pct}%`;
+  fill.style.background = color;
+  valEl.textContent     = label;
+  valEl.style.color     = pct > 80 ? '#ff3b5c' : pct > 50 ? '#ffb300' : color;
+}
+
+// ════════════════════════════════════════════════════════════════
+//  SWITCH LIST
+// ════════════════════════════════════════════════════════════════
+function renderSwitchList() {
+  const el = document.getElementById('switch-list');
+  const keys = Object.keys(state.switches);
+  if (keys.length === 0) {
+    el.innerHTML = `<div class="topo-loading" style="position:relative;height:60px">
+      <div class="spinner"></div><span>Waiting...</span></div>`;
+    return;
+  }
+  el.innerHTML = keys.map(dpid => {
+    const m = state.switches[dpid];
+    const sel = dpid === state.selectedDpid ? 'selected' : '';
+    return `<div class="switch-card ${sel}" onclick="selectSwitch('${dpid}')">
+      <div class="sw-name">${dpid}</div>
+      <div class="sw-stats">
+        <span class="sw-stat">BW↓ <span class="sw-val">${(m.bw_rx_mbps||0).toFixed(2)}</span> Mbps</span>
+        <span class="sw-stat">BW↑ <span class="sw-val">${(m.bw_tx_mbps||0).toFixed(2)}</span> Mbps</span>
+        <span class="sw-stat">Lat <span class="sw-val">${(m.latency_ms||0).toFixed(1)}</span> ms</span>
+        <span class="sw-stat">Loss <span class="sw-val">${(m.loss_pct||0).toFixed(2)}</span>%</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function selectSwitch(dpid) {
+  state.selectedDpid = dpid;
+  renderSwitchList();
+  updateGauges();
+}
+
+// ════════════════════════════════════════════════════════════════
+//  FLOW TABLE
+// ════════════════════════════════════════════════════════════════
+function renderFlowTable(flows) {
+  const tbody = document.getElementById('flow-tbody');
+  const rows = [];
+  let total = 0;
+  for (const [dpid, flowMap] of Object.entries(flows)) {
+    for (const [key, f] of Object.entries(flowMap)) {
+      total++;
+      rows.push(`<tr>
+        <td style="color:var(--accent)">${dpid.slice(-8)}</td>
+        <td style="color:var(--text)">${key}</td>
+        <td class="td-good">${f.packet_count?.toLocaleString() ?? '—'}</td>
+        <td>${fmt_bytes(f.byte_count)}</td>
+        <td style="color:var(--dim)">${f.duration_sec}s</td>
+      </tr>`);
+    }
+  }
+  tbody.innerHTML = rows.length ? rows.join('') :
+    `<tr><td colspan="5" style="text-align:center;color:var(--dim);padding:20px">No flows yet</td></tr>`;
+  document.getElementById('flow-count-badge').textContent = `${total} entries`;
+  document.getElementById('kpi-flows').textContent = total;
+}
+
+function fmt_bytes(b) {
+  if (!b) return '0 B';
+  if (b < 1024)   return `${b} B`;
+  if (b < 1048576) return `${(b/1024).toFixed(1)} KB`;
+  return `${(b/1048576).toFixed(2)} MB`;
+}
+
+// ════════════════════════════════════════════════════════════════
+//  EVENT LOG
+// ════════════════════════════════════════════════════════════════
+function renderEventLog(events) {
+  const el = document.getElementById('event-log');
+  el.innerHTML = events.slice(0, 20).map(ev => {
+    const t = ev.ts?.split('T')[1]?.split('.')[0] ?? '';
+    return `<div class="event-item ${ev.level}">
+      <span class="event-time">${t}</span>
+      <span class="event-cat">${ev.category?.toUpperCase()}</span>
+      <span class="event-msg">${ev.message}</span>
+    </div>`;
+  }).join('');
+}
+
+// ════════════════════════════════════════════════════════════════
+//  MAIN POLL LOOP
+// ════════════════════════════════════════════════════════════════
+async function poll() {
+  // Health check
+  const health = await apiFetch('health');
+  const online = health?.status === 'ok';
+
+  const statusEl = document.getElementById('controller-status');
+  if (online !== state.online) {
+    state.online = online;
+    statusEl.className = `status-badge ${online ? 'online' : 'offline'}`;
+    statusEl.innerHTML = `<div class="status-dot"></div>
+      <span>CONTROLLER ${online ? 'ONLINE' : 'OFFLINE'}</span>`;
+    document.getElementById('ds-status').textContent = online ? 'RECORDING' : 'WAITING';
+    document.getElementById('ds-status').style.color = online ? 'var(--green)' : 'var(--amber)';
+  }
+
+  if (!online) return;
+
+  // Metrics
+  const metricsData = await apiFetch('metrics/latest');
+  if (metricsData?.metrics) {
+    const keys = Object.keys(metricsData.metrics);
+    document.getElementById('kpi-switches').textContent = keys.length;
+    document.getElementById('topo-overlay').style.display = 'none';
+
+    let totalBw = 0, totalLat = 0, totalLoss = 0, n = 0;
+    for (const [dpid, m] of Object.entries(metricsData.metrics)) {
+      state.switches[dpid] = m;
+      totalBw  += (m.bw_rx_mbps || 0) + (m.bw_tx_mbps || 0);
+      totalLat += (m.latency_ms || 0);
+      totalLoss += (m.loss_pct || 0);
+      n++;
+    }
+
+    document.getElementById('kpi-bw').textContent   = totalBw.toFixed(2);
+    document.getElementById('kpi-lat').textContent  = n ? (totalLat/n).toFixed(1) : '—';
+    document.getElementById('kpi-loss').textContent = n ? (totalLoss/n).toFixed(3) : '—';
+
+    // Auto-select first switch
+    if (!state.selectedDpid && keys.length > 0) {
+      state.selectedDpid = keys[0];
+    }
+
+    // Chart data — aggregate all switches
+    if (n > 0) {
+      const first = Object.values(metricsData.metrics)[0];
+      pushChartData(
+        first.ts_iso || new Date().toISOString(),
+        totalBw / 2,  // avg rx
+        totalBw / 2,  // avg tx
+        totalLat / n,
+        first.jitter_ms || 0
+      );
+    }
+
+    state.totalSamples++;
+    document.getElementById('ds-samples').textContent = state.totalSamples;
+    renderSwitchList();
+    updateGauges();
+  }
+
+  // Topology + Hosts
+  const topoData = await apiFetch('topology');
+  const hostData = await apiFetch('hosts');
+  if (topoData) {
+    state.topology = topoData;
+    if (hostData?.hosts) state.topology.hosts = hostData.hosts;
+    else state.topology.hosts = state.topology.hosts || [];
+    buildTopoNodes(state.topology);
+  }
+
+  // Flows
+  const flowData = await apiFetch('flows');
+  if (flowData?.flows) {
+    renderFlowTable(flowData.flows);
+  }
+
+  // Events
+  const evData = await apiFetch('events');
+  if (evData?.events) {
+    renderEventLog(evData.events);
+  }
+
+  document.getElementById('last-update').textContent =
+    `LAST UPDATE: ${new Date().toLocaleTimeString('en-GB', {hour12:false})}`;
+}
+
+// Demo mode: inject fake data if controller is offline (for UI testing)
+function injectDemoData() {
+  if (state.online) return;
+  const dpids = ['0000000000000001', '0000000000000002', '0000000000000003', '0000000000000004'];
+  dpids.forEach((dpid, i) => {
+    state.switches[dpid] = {
+      bw_rx_mbps: 5  + Math.random() * 30,
+      bw_tx_mbps: 3  + Math.random() * 20,
+      latency_ms: 5  + Math.random() * 20,
+      jitter_ms:  0.5 + Math.random() * 5,
+      loss_pct:   Math.random() * 2,
+      reward:     (Math.random() - 0.5) * 0.8,
+      ts_iso:     new Date().toISOString(),
+    };
+  });
+  // Fake topology
+  state.topology.switches = dpids.map((d,i) => ({dpid:d, status:'active'}));
+  state.topology.links = [
+    {src_dpid: dpids[0], dst_dpid: dpids[1]},
+    {src_dpid: dpids[1], dst_dpid: dpids[2]},
+    {src_dpid: dpids[2], dst_dpid: dpids[3]},
+    {src_dpid: dpids[3], dst_dpid: dpids[0]},
+    {src_dpid: dpids[0], dst_dpid: dpids[2]},
+  ];
+  buildTopoNodes(state.topology);
+
+  if (!state.selectedDpid) state.selectedDpid = dpids[0];
+  document.getElementById('kpi-switches').textContent = dpids.length;
+  const total = Object.values(state.switches).reduce((s,m) => s + m.bw_rx_mbps + m.bw_tx_mbps, 0);
+  document.getElementById('kpi-bw').textContent = total.toFixed(2);
+  document.getElementById('kpi-lat').textContent = '8.4';
+  document.getElementById('kpi-loss').textContent = '0.012';
+  document.getElementById('topo-overlay').style.display = 'none';
+
+  const first = Object.values(state.switches)[0];
+  pushChartData(new Date().toISOString(), first.bw_rx_mbps, first.bw_tx_mbps, first.latency_ms, first.jitter_ms);
+  state.totalSamples++;
+  document.getElementById('ds-samples').textContent = state.totalSamples;
+  renderSwitchList();
+  updateGauges();
+  renderEventLog([
+    {ts: new Date().toISOString(), category:'demo', message:'Demo mode: controller offline', level:'warning'},
+    {ts: new Date().toISOString(), category:'info',  message:'Connect Ryu controller to see live data', level:'info'},
+  ]);
+}
+
+// ── Start polling ──
+poll();
+setInterval(poll, POLL);
+
+// ── Demo fallback ──
+setTimeout(() => {
+  if (!state.online) injectDemoData();
+}, 1500);
+setInterval(() => {
+  if (!state.online) injectDemoData();
+}, POLL);
+</script>
+</body>
+</html>
