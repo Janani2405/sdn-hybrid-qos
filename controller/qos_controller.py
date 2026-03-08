@@ -8,14 +8,22 @@ qos_controller.py — SDN QoS Controller (MERGED: Visualization + Data Collectio
 Combines port_stats_monitor_v2.py + qos_controller.py into ONE file:
 
   [1] DATA COLLECTION  (exact logic from port_stats_monitor_v2.py)
-        → logs/qos_log.csv         every 2s  — LSTM training data
+        → logs/qos_log.csv         every 2s  — LSTM training data (expanded: 25 features)
         → logs/congestion_log.csv  per new episode — congestion labels
         → [CONGESTION DETECTED] console banner on every new episode
         → [CONGESTION ONGOING]  on sustained congestion (no counter inflation)
         → Full debounce: episode counter increments once per episode, not per tick
         → Counter-wrap / OVS-restart guard on all deltas
 
-  [2] VISUALIZATION    (exact REST API from qos_controller.py)
+  [2] REAL LATENCY / JITTER MEASUREMENT  (replaces random.uniform stubs)
+        → LLDP echo probes sent every LLDP_PROBE_INTERVAL seconds per link
+        → Round-trip time split by 2 → one-way latency per directed link
+        → Per-link jitter = exponential moving average of |RTT_n − RTT_{n-1}|
+        → Latency/jitter aggregated per switch (mean across its links)
+        → loss_pct derived from real rx_dropped / rx_bytes counters
+        → All values feed compute_reward() — no random numbers remain
+
+  [3] VISUALIZATION    (exact REST API from qos_controller.py)
         → http://127.0.0.1:8080/qos/api/v1/health
         → http://127.0.0.1:8080/qos/api/v1/metrics/latest
         → http://127.0.0.1:8080/qos/api/v1/topology
@@ -23,7 +31,8 @@ Combines port_stats_monitor_v2.py + qos_controller.py into ONE file:
         → http://127.0.0.1:8080/qos/api/v1/ports
         → http://127.0.0.1:8080/qos/api/v1/events
         → http://127.0.0.1:8080/qos/api/v1/hosts
-        → http://127.0.0.1:8080/qos/api/v1/congestion  (NEW — live state)
+        → http://127.0.0.1:8080/qos/api/v1/congestion
+        → http://127.0.0.1:8080/qos/api/v1/latency   (NEW — per-link RTT)
         → Powers dashboard.html live charts and topology view
 
 Run:
@@ -33,6 +42,37 @@ Run:
 
 Dashboard:
     Open docs/dashboard.html in browser
+
+HOW REAL LATENCY WORKS
+=======================
+Ryu's --observe-links flag makes the topology module send periodic LLDP
+packets between every pair of adjacent switches.  Each LLDP packet carries
+the sending switch's DPID and port number inside its TLVs.
+
+We intercept those packets in _packet_in_handler BEFORE the L2 learning
+logic and record send_time = time.time() keyed by (src_dpid, src_port).
+
+When the same LLDP arrives at the neighbouring switch it is forwarded to the
+controller as a normal PacketIn.  We detect it here, look up the stored
+send_time, and compute:
+
+    RTT  = now − send_time          (round-trip, controller→sw_A→link→sw_B→controller)
+    OWD  ≈ RTT / 2                  (one-way delay approximation)
+
+Jitter is tracked per directed link as an EWMA of successive OWD differences:
+
+    jitter_n = α * |OWD_n − OWD_{n-1}| + (1−α) * jitter_{n-1}   α = 0.2
+
+This gives a per-link, continuously updated, real jitter estimate with no
+synthetic noise whatsoever.
+
+LOSS CALCULATION
+================
+loss_pct per port  = (delta_rx_dropped / max(delta_rx_packets, 1)) * 100
+where delta_rx_packets is derived from (delta_rx_bytes / avg_frame_bytes).
+Because OVS does not expose rx_packet counters in port stats on all versions
+we use a conservative 1500-byte MTU estimate for the denominator.
+Per-switch loss_pct is then the mean across all its ports.
 =============================================================================
 """
 
@@ -40,10 +80,10 @@ import os
 import csv
 import json
 import time
+import struct
 import logging
 import threading
 import collections
-import random
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -64,11 +104,17 @@ from webob import Response
 
 
 # ─────────────────────────────────────────────────────────────────
-#  Tunables  (from port_stats_monitor_v2.py — unchanged)
+#  Tunables
 # ─────────────────────────────────────────────────────────────────
 POLL_INTERVAL          = 2        # seconds between PortStatsRequest per switch
+LLDP_PROBE_INTERVAL    = 1        # seconds between latency probe sends
+LLDP_PROBE_TIMEOUT     = 5        # seconds before a probe sample is discarded
+JITTER_ALPHA           = 0.2      # EWMA smoothing factor for jitter
+AVG_FRAME_BYTES        = 1000     # conservative estimate for loss_pct denominator
 LINK_CAPACITY_MBPS     = 100.0    # assumed link capacity (matches TCLink bw=100)
 UTIL_CONGESTION_THRESH = 95.0     # utilisation % that triggers signal_util
+WARN_UTIL_THRESH       = 70.0     # utilisation % for zone_label = 'warning'
+ROLLING_WINDOW         = 5        # number of past samples for rolling features
 LOG_DIR                = 'logs'
 QOS_CSV_FILE           = os.path.join(LOG_DIR, 'qos_log.csv')
 CONG_CSV_FILE          = os.path.join(LOG_DIR, 'congestion_log.csv')
@@ -76,21 +122,71 @@ CONG_CSV_FILE          = os.path.join(LOG_DIR, 'congestion_log.csv')
 # OVS internal/reserved port numbers — always skipped
 SKIP_PORTS = {0xfffffffe, 0xffffffff}   # OFPP_LOCAL, OFPP_NONE
 
+# LLDP multicast destination used by Ryu topology module
+LLDP_MAC_NEAREST_BRIDGE = '01:80:c2:00:00:0e'
+
 # REST API prefix
 REST_API_URL = '/qos/api/v1'
 
 
 # ─────────────────────────────────────────────────────────────────
-#  CSV column definitions  (exact from port_stats_monitor_v2.py)
+#  CSV column definitions
+#
+#  qos_log.csv — 25 features + 1 label, written every POLL_INTERVAL
+#  ─────────────────────────────────────────────────────────────────
+#  Group A  — Identity / timing
+#    timestamp, dpid, port_no
+#
+#  Group B  — Raw counters (absolute)
+#    tx_bytes, rx_bytes, tx_dropped, rx_dropped
+#
+#  Group C  — Per-interval throughput & utilisation (derived)
+#    tx_mbps, rx_mbps, utilization_pct, loss_pct
+#    tx_pps   — estimated TX packets/s  (delta_tx / AVG_FRAME_BYTES / delta_t)
+#    rx_pps   — estimated RX packets/s  (delta_rx / AVG_FRAME_BYTES / delta_t)
+#    bw_headroom_mbps — remaining capacity before saturation
+#
+#  Group D  — Drop deltas (per-interval)
+#    delta_tx_dropped, delta_rx_dropped
+#
+#  Group E  — Latency / jitter (from LLDP probes, port-level)
+#    latency_ms, jitter_ms, rtt_ms
+#
+#  Group F  — Rolling / trend features (last ROLLING_WINDOW samples)
+#    rolling_util_mean   — smoothed utilisation trend
+#    rolling_drop_sum    — accumulated drop pressure
+#    rolling_tx_mean     — smoothed TX throughput
+#    rolling_rx_mean     — smoothed RX throughput
+#
+#  Group G  — Topology context
+#    n_active_flows      — flow table size on this switch
+#    neighbor_util_max   — highest util_pct among directly linked switches
+#    inter_arrival_delta — seconds since last congestion event on this port
+#
+#  Group H  — Signals & label
+#    signal_util, signal_drop
+#    zone_label          — 'normal' | 'warning' | 'congested' | 'critical'
+#    congested           — binary label (0 / 1)
 # ─────────────────────────────────────────────────────────────────
 QOS_COLUMNS = [
+    # A — identity
     'timestamp', 'dpid', 'port_no',
-    'tx_bytes', 'rx_bytes',
-    'tx_mbps', 'rx_mbps',
-    'tx_dropped', 'rx_dropped',
+    # B — raw counters
+    'tx_bytes', 'rx_bytes', 'tx_dropped', 'rx_dropped',
+    # C — throughput / utilisation
+    'tx_mbps', 'rx_mbps', 'utilization_pct', 'loss_pct',
+    'tx_pps', 'rx_pps', 'bw_headroom_mbps',
+    # D — drop deltas
     'delta_tx_dropped', 'delta_rx_dropped',
-    'utilization_pct',
-    'signal_util', 'signal_drop', 'congested',
+    # E — latency / jitter
+    'latency_ms', 'jitter_ms', 'rtt_ms',
+    # F — rolling features
+    'rolling_util_mean', 'rolling_drop_sum',
+    'rolling_tx_mean', 'rolling_rx_mean',
+    # G — topology context
+    'n_active_flows', 'neighbor_util_max', 'inter_arrival_delta',
+    # H — signals & label
+    'signal_util', 'signal_drop', 'zone_label', 'congested',
 ]
 
 CONG_COLUMNS = [
@@ -141,9 +237,35 @@ link_store       = []
 metrics_history  = collections.defaultdict(lambda: collections.deque(maxlen=60))
 event_log        = collections.deque(maxlen=100)
 
+# ─────────────────────────────────────────────────────────────────
+#  Latency store — populated by LLDP probe logic, read by REST API
+#  Key:   (src_dpid_int, src_port_no)
+#  Value: { 'latency_ms': float, 'jitter_ms': float,
+#            'rtt_ms': float, 'ts': float }
+# ─────────────────────────────────────────────────────────────────
+latency_store = {}
+
+# ─────────────────────────────────────────────────────────────────
+#  Rolling feature buffers
+#  Key:   (dpid_int, port_no)
+#  Value: deque of dicts  { 'util': float, 'drops': int,
+#                            'tx': float, 'rx': float }
+#  Length capped at ROLLING_WINDOW so mean/sum are always over the
+#  last N samples with zero extra storage.
+# ─────────────────────────────────────────────────────────────────
+rolling_buffers: dict = {}   # populated on first port-stats sample
+
+# ─────────────────────────────────────────────────────────────────
+#  Last-congestion timestamp per port — for inter_arrival_delta
+#  Key:   (dpid_int, port_no)
+#  Value: float (time.time() of last congestion episode start)
+# ─────────────────────────────────────────────────────────────────
+last_congestion_ts: dict = {}
+
 
 # ─────────────────────────────────────────────────────────────────
 #  Reward signal  (from qos_controller.py — for DQN Module III)
+#  Now called with REAL latency, jitter, loss values.
 # ─────────────────────────────────────────────────────────────────
 def compute_reward(bw_mbps, latency_ms, loss_pct, jitter_ms):
     MAX_BW     = 100.0
@@ -154,6 +276,107 @@ def compute_reward(bw_mbps, latency_ms, loss_pct, jitter_ms):
     norm_loss   = min(loss_pct   / 100.0,      1.0)
     norm_jitter = min(jitter_ms  / MAX_JITTER, 1.0)
     return round(norm_bw - norm_lat - norm_loss - 0.5 * norm_jitter, 4)
+
+
+# ─────────────────────────────────────────────────────────────────
+#  LLDP packet builder
+#  Constructs an LLDP frame that carries:
+#    • Chassis ID TLV  → src_dpid  (8-byte big-endian)
+#    • Port ID TLV     → src_port  (4-byte big-endian)
+#    • TTL TLV         → 120 s
+#    • send_time TLV   → float encoded as 8-byte big-endian (custom OUI)
+#    • End TLV
+#
+#  The custom send_time TLV uses OUI 0x00_26_E1 (Ryu's assigned OUI) and
+#  subtype 0x01 so it survives any LLDP-aware middlebox that passes unknown
+#  TLVs.  We encode time.time() as a double (struct 'd', 8 bytes).
+# ─────────────────────────────────────────────────────────────────
+_RYU_OUI    = b'\x00\x26\xe1'
+_TIME_STYPE = b'\x01'
+_TIME_TLV_LEN = 4 + 8   # OUI(3) + subtype(1) + time(8) = 12
+
+def _build_lldp_probe(src_dpid: int, src_port: int, send_time: float) -> bytes:
+    """
+    Build a raw LLDP ethernet frame suitable for OFPPacketOut.
+
+    TLV wire format:  [ type(7b) | length(9b) | value(length bytes) ]
+    """
+    def tlv(tlv_type: int, value: bytes) -> bytes:
+        header = ((tlv_type << 9) | len(value)).to_bytes(2, 'big')
+        return header + value
+
+    # Chassis ID TLV  (subtype=4 = locally assigned)
+    chassis = tlv(1, b'\x04' + src_dpid.to_bytes(8, 'big'))
+    # Port ID TLV     (subtype=2 = port component)
+    port_id = tlv(2, b'\x02' + src_port.to_bytes(4, 'big'))
+    # TTL TLV
+    ttl     = tlv(3, (120).to_bytes(2, 'big'))
+    # Custom time TLV (type=127 = org-specific)
+    time_val = struct.pack('>d', send_time)
+    org_tlv  = tlv(127, _RYU_OUI + _TIME_STYPE + time_val)
+    # End TLV
+    end      = tlv(0, b'')
+
+    lldp_payload = chassis + port_id + ttl + org_tlv + end
+
+    # Ethernet header: dst=LLDP multicast, src=locally generated (dpid+port)
+    src_mac_int = (src_dpid & 0xFFFFFFFFFF00) | (src_port & 0xFF)
+    src_mac = ':'.join(f'{(src_mac_int >> (8 * i)) & 0xFF:02x}'
+                       for i in reversed(range(6)))
+    dst_mac_bytes = bytes.fromhex(LLDP_MAC_NEAREST_BRIDGE.replace(':', ''))
+    src_mac_bytes = bytes.fromhex(src_mac.replace(':', ''))
+    eth_type      = (0x88CC).to_bytes(2, 'big')
+
+    return dst_mac_bytes + src_mac_bytes + eth_type + lldp_payload
+
+
+def _parse_lldp_probe(raw: bytes):
+    """
+    Parse a raw ethernet frame.
+    Returns (src_dpid, src_port, send_time) or None if not our probe.
+
+    We look for:
+      • ethertype == 0x88CC
+      • Chassis ID TLV subtype 4 with 8-byte dpid
+      • Port ID TLV subtype 2 with 4-byte port
+      • Org-specific TLV with our OUI + subtype + 8-byte time
+    """
+    if len(raw) < 14:
+        return None
+    if raw[12:14] != b'\x88\xcc':
+        return None
+
+    payload = raw[14:]
+    pos = 0
+    src_dpid   = None
+    src_port   = None
+    send_time  = None
+
+    while pos + 2 <= len(payload):
+        header   = int.from_bytes(payload[pos:pos+2], 'big')
+        tlv_type = (header >> 9) & 0x7F
+        tlv_len  = header & 0x1FF
+        pos     += 2
+        if pos + tlv_len > len(payload):
+            break
+        value = payload[pos:pos+tlv_len]
+        pos  += tlv_len
+
+        if tlv_type == 0:                         # End TLV
+            break
+        elif tlv_type == 1 and tlv_len == 9:      # Chassis ID (our format)
+            if value[0:1] == b'\x04':
+                src_dpid = int.from_bytes(value[1:9], 'big')
+        elif tlv_type == 2 and tlv_len == 5:      # Port ID (our format)
+            if value[0:1] == b'\x02':
+                src_port = int.from_bytes(value[1:5], 'big')
+        elif tlv_type == 127 and tlv_len == 12:   # Org-specific
+            if value[0:3] == _RYU_OUI and value[3:4] == _TIME_STYPE:
+                send_time = struct.unpack('>d', value[4:12])[0]
+
+    if src_dpid is not None and src_port is not None and send_time is not None:
+        return src_dpid, src_port, send_time
+    return None
 
 
 # =============================================================================
@@ -188,21 +411,52 @@ class QoSController(app_manager.RyuApp):
         self._qos_log  = CSVLogger(QOS_CSV_FILE,  QOS_COLUMNS)
         self._cong_log = CSVLogger(CONG_CSV_FILE, CONG_COLUMNS)
 
-        # ── Start background poll loop ────────────────────────────────────
-        self._poll_thread = hub.spawn(self._poll_loop)
+        # ── LLDP probe tracking ───────────────────────────────────────────
+        #
+        # _probe_send_times:
+        #   key   = (src_dpid, src_port)
+        #   value = send_time (float, time.time())
+        #   Protected by _probe_lock.  Entries older than LLDP_PROBE_TIMEOUT
+        #   are discarded so stale data never poisons the latency estimates.
+        #
+        # _link_latency:
+        #   key   = (src_dpid, src_port)   ← the *sending* side of the link
+        #   value = { 'owd_ms':     float  ← latest one-way delay
+        #             'jitter_ms':  float  ← EWMA jitter
+        #             'rtt_ms':     float  ← latest RTT
+        #             'prev_owd':   float  ← previous OWD for jitter calc
+        #             'ts':         float  ← time of last update }
+        #
+        self._probe_send_times = {}
+        self._link_latency     = {}
+        self._probe_lock       = threading.Lock()
+
+        # ── Per-switch loss accumulators ──────────────────────────────────
+        #   Filled during _port_stats_reply, read during _aggregate_switch_metrics
+        #   key   = dpid (int)
+        #   value = list of per-port loss_pct values from latest poll cycle
+        self._port_loss = defaultdict(list)   # dpid -> [loss_pct, ...]
+        self._loss_lock = threading.Lock()
+
+        # ── Start background threads ──────────────────────────────────────
+        self._poll_thread  = hub.spawn(self._poll_loop)
+        self._probe_thread = hub.spawn(self._lldp_probe_loop)
 
         # ── Register REST API ─────────────────────────────────────────────
         wsgi = kwargs['wsgi']
         wsgi.register(QoSRestAPI, {'controller': self})
 
         self._log_event("controller",
-            "QoS Controller started (merged: data + visualization)", "info")
+            "QoS Controller started (merged: data + real latency + visualization)",
+            "info")
         self.logger.info('QoS log        → %s', os.path.abspath(QOS_CSV_FILE))
         self.logger.info('Congestion log → %s', os.path.abspath(CONG_CSV_FILE))
         self.logger.info('REST API       → http://127.0.0.1:8080%s', REST_API_URL)
         self.logger.info(
-            'Config: poll=%ds  capacity=%.0f Mbps  util_threshold=%.0f%%',
-            POLL_INTERVAL, LINK_CAPACITY_MBPS, UTIL_CONGESTION_THRESH
+            'Config: poll=%ds  lldp_probe=%ds  capacity=%.0f Mbps  '
+            'util_threshold=%.0f%%',
+            POLL_INTERVAL, LLDP_PROBE_INTERVAL,
+            LINK_CAPACITY_MBPS, UTIL_CONGESTION_THRESH
         )
 
     def _configure_logger(self):
@@ -272,7 +526,7 @@ class QoSController(app_manager.RyuApp):
                 f"Switch {dpid_lib.dpid_to_str(dpid)} disconnected", "warning")
 
     # =========================================================================
-    #  Packet-in  (L2 learning switch)
+    #  Packet-in  (L2 learning switch + LLDP probe interception)
     # =========================================================================
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
@@ -282,12 +536,43 @@ class QoSController(app_manager.RyuApp):
         ofproto  = datapath.ofproto
         parser   = datapath.ofproto_parser
         in_port  = msg.match['in_port']
+        raw_data = msg.data
 
-        pkt = packet.Packet(msg.data)
+        # ── LLDP probe interception ───────────────────────────────────────
+        #
+        # Try to parse our custom probe BEFORE the normal Ryu LLDP filter.
+        # If it matches, record the RTT and return immediately — do NOT flood
+        # or learn this fake MAC into the forwarding table.
+        #
+        parsed = _parse_lldp_probe(raw_data)
+        if parsed is not None:
+            src_dpid, src_port, send_time = parsed
+            now_time = time.time()
+            age      = now_time - send_time
+
+            if age <= LLDP_PROBE_TIMEOUT:
+                rtt_ms = age * 1000.0
+                owd_ms = rtt_ms / 2.0
+                self._record_latency(src_dpid, src_port, owd_ms, rtt_ms)
+                self.logger.debug(
+                    'LLDP probe received: src_dpid=0x%016x src_port=%s '
+                    'RTT=%.2f ms  OWD=%.2f ms  (arrived at dpid=0x%016x port=%s)',
+                    src_dpid, src_port, rtt_ms, owd_ms, datapath.id, in_port
+                )
+            else:
+                self.logger.debug(
+                    'LLDP probe STALE (age=%.2fs > %.0fs) — discarded',
+                    age, LLDP_PROBE_TIMEOUT
+                )
+            return   # Do not forward this probe packet
+
+        # ── Normal Ryu LLDP (topology module) — skip ─────────────────────
+        pkt = packet.Packet(raw_data)
         eth = pkt.get_protocols(ethernet.ethernet)[0]
         if eth.ethertype == ether_types.ETH_TYPE_LLDP:
             return
 
+        # ── L2 learning switch  (unchanged from original) ─────────────────
         dst  = eth.dst
         src  = eth.src
         dpid = datapath.id
@@ -305,7 +590,7 @@ class QoSController(app_manager.RyuApp):
             else:
                 self._add_flow(datapath, 1, match, actions)
 
-        data = msg.data if msg.buffer_id == ofproto.OFP_NO_BUFFER else None
+        data = raw_data if msg.buffer_id == ofproto.OFP_NO_BUFFER else None
         out  = parser.OFPPacketOut(
             datapath=datapath, buffer_id=msg.buffer_id,
             in_port=in_port, actions=actions, data=data
@@ -340,6 +625,7 @@ class QoSController(app_manager.RyuApp):
     # =========================================================================
     #  Port stats reply — CORE
     #  Full 5-step pipeline from port_stats_monitor_v2.py
+    #  + real loss_pct calculation
     #  + feeds REST API metrics_history for dashboard
     # =========================================================================
 
@@ -352,6 +638,10 @@ class QoSController(app_manager.RyuApp):
         ts   = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
 
         port_stats_store.setdefault(dpid, {})
+
+        # Reset per-switch loss list for this poll cycle
+        with self._loss_lock:
+            self._port_loss[dpid] = []
 
         for stat in body:
             port_no = stat.port_no
@@ -405,22 +695,113 @@ class QoSController(app_manager.RyuApp):
                     'ts': now,
                 }
 
-            # ── Step 2: Throughput and utilisation  (exact from v2) ───────
+            # ── Step 2: Throughput, utilisation, pps, headroom ───────────
             tx_mbps  = (delta_tx * 8) / (delta_t * 1_000_000)
             rx_mbps  = (delta_rx * 8) / (delta_t * 1_000_000)
             peak     = max(tx_mbps, rx_mbps)
             util_pct = min((peak / LINK_CAPACITY_MBPS) * 100.0, 100.0)
+
+            # Estimated packets/s  (Group C)
+            tx_pps = (delta_tx / AVG_FRAME_BYTES) / delta_t
+            rx_pps = (delta_rx / AVG_FRAME_BYTES) / delta_t
+
+            # Remaining bandwidth before saturation  (Group C)
+            bw_headroom_mbps = max(LINK_CAPACITY_MBPS - peak, 0.0)
+
+            # ── Step 2b: Real loss_pct for this port  (Group C) ───────────
+            if delta_rx_d == 0:
+                port_loss_pct = 0.0
+            else:
+                est_rx_pkts   = delta_rx / AVG_FRAME_BYTES
+                total_offered = est_rx_pkts + delta_rx_d
+                port_loss_pct = min(
+                    (delta_rx_d / max(total_offered, 1)) * 100.0,
+                    100.0
+                )
+
+            with self._loss_lock:
+                self._port_loss[dpid].append(port_loss_pct)
+
+            # ── Step 2c: Rolling features  (Group F) ──────────────────────
+            #
+            # Maintain a per-port deque of length ROLLING_WINDOW.
+            # Each sample stores the four values needed for all four rolling
+            # columns.  We compute mean/sum inline — no pandas dependency.
+            #
+            if key not in rolling_buffers:
+                rolling_buffers[key] = collections.deque(maxlen=ROLLING_WINDOW)
+
+            rolling_buffers[key].append({
+                'util':  util_pct,
+                'drops': delta_tx_d + delta_rx_d,
+                'tx':    tx_mbps,
+                'rx':    rx_mbps,
+            })
+            buf = rolling_buffers[key]
+            n   = len(buf)
+
+            rolling_util_mean = sum(s['util']  for s in buf) / n
+            rolling_drop_sum  = sum(s['drops'] for s in buf)
+            rolling_tx_mean   = sum(s['tx']    for s in buf) / n
+            rolling_rx_mean   = sum(s['rx']    for s in buf) / n
+
+            # ── Step 2d: Latency / jitter for this port  (Group E) ────────
+            #
+            # _link_latency is keyed by (src_dpid, src_port).  We look up
+            # the entry whose src_dpid == dpid and src_port == port_no.
+            # Falls back to 0.0 if no LLDP probe has been received yet.
+            #
+            with self._probe_lock:
+                link_entry = self._link_latency.get(key)
+            if link_entry is not None:
+                port_latency_ms = link_entry['owd_ms']
+                port_jitter_ms  = link_entry['jitter_ms']
+                port_rtt_ms     = link_entry['rtt_ms']
+            else:
+                port_latency_ms = 0.0
+                port_jitter_ms  = 0.0
+                port_rtt_ms     = 0.0
+
+            # ── Step 2e: Topology context features  (Group G) ─────────────
+
+            # n_active_flows — from the switch's last flow-stats reply
+            n_active_flows = switch_store.get(dpid, {}).get('n_flows', 0)
+
+            # neighbor_util_max — highest utilisation across all switches
+            # that share a link with this one (src_dpid == dpid or dst_dpid == dpid)
+            neighbor_util_max = self._get_neighbor_util_max(dpid)
+
+            # inter_arrival_delta — seconds since last congestion episode
+            # on this specific port.  0.0 if never congested.
+            last_cong = last_congestion_ts.get(key)
+            inter_arrival_delta = (now - last_cong) if last_cong else 0.0
 
             # ── Step 3: Dual-signal congestion detection  (exact from v2) ─
             signal_util = util_pct  > UTIL_CONGESTION_THRESH
             signal_drop = (delta_tx_d > 0) or (delta_rx_d > 0)
             congested   = signal_util or signal_drop
 
+            # ── Zone label  (Group H) ─────────────────────────────────────
+            #   critical   → util > threshold AND drops present
+            #   congested  → either signal fired
+            #   warning    → util > WARN_UTIL_THRESH but below threshold
+            #   normal     → everything quiet
+            if signal_util and signal_drop:
+                zone_label = 'critical'
+            elif congested:
+                zone_label = 'congested'
+            elif util_pct > WARN_UTIL_THRESH:
+                zone_label = 'warning'
+            else:
+                zone_label = 'normal'
+
             # ── Step 4 & 5: Episode detection with debounce  (exact from v2)
             is_new_episode = congested and not self._was_congested[key]
             self._was_congested[key] = congested
 
             if is_new_episode:
+                # Record timestamp for inter_arrival_delta on next episode
+                last_congestion_ts[key] = now
                 reasons = []
                 if signal_util:
                     reasons.append(
@@ -483,47 +864,76 @@ class QoSController(app_manager.RyuApp):
                     dpid, port_no, util_pct, delta_tx_d, delta_rx_d
                 )
 
-            # ── qos_log.csv — every interval unconditionally  (exact from v2)
+            # ── qos_log.csv — every interval, all 30 columns ─────────────
             self._qos_log.write({
-                'timestamp':        ts,
-                'dpid':             f'0x{dpid:016x}',
-                'port_no':          port_no,
-                'tx_bytes':         tx_bytes,
-                'rx_bytes':         rx_bytes,
-                'tx_mbps':          f'{tx_mbps:.4f}',
-                'rx_mbps':          f'{rx_mbps:.4f}',
-                'tx_dropped':       tx_dropped,
-                'rx_dropped':       rx_dropped,
-                'delta_tx_dropped': delta_tx_d,
-                'delta_rx_dropped': delta_rx_d,
-                'utilization_pct':  f'{util_pct:.2f}',
-                'signal_util':      int(signal_util),
-                'signal_drop':      int(signal_drop),
-                'congested':        int(congested),
+                # A — identity
+                'timestamp':           ts,
+                'dpid':                f'0x{dpid:016x}',
+                'port_no':             port_no,
+                # B — raw counters
+                'tx_bytes':            tx_bytes,
+                'rx_bytes':            rx_bytes,
+                'tx_dropped':          tx_dropped,
+                'rx_dropped':          rx_dropped,
+                # C — throughput / utilisation
+                'tx_mbps':             f'{tx_mbps:.4f}',
+                'rx_mbps':             f'{rx_mbps:.4f}',
+                'utilization_pct':     f'{util_pct:.2f}',
+                'loss_pct':            f'{port_loss_pct:.4f}',
+                'tx_pps':              f'{tx_pps:.2f}',
+                'rx_pps':              f'{rx_pps:.2f}',
+                'bw_headroom_mbps':    f'{bw_headroom_mbps:.4f}',
+                # D — drop deltas
+                'delta_tx_dropped':    delta_tx_d,
+                'delta_rx_dropped':    delta_rx_d,
+                # E — latency / jitter
+                'latency_ms':          f'{port_latency_ms:.3f}',
+                'jitter_ms':           f'{port_jitter_ms:.3f}',
+                'rtt_ms':              f'{port_rtt_ms:.3f}',
+                # F — rolling features
+                'rolling_util_mean':   f'{rolling_util_mean:.2f}',
+                'rolling_drop_sum':    rolling_drop_sum,
+                'rolling_tx_mean':     f'{rolling_tx_mean:.4f}',
+                'rolling_rx_mean':     f'{rolling_rx_mean:.4f}',
+                # G — topology context
+                'n_active_flows':      n_active_flows,
+                'neighbor_util_max':   f'{neighbor_util_max:.2f}',
+                'inter_arrival_delta': f'{inter_arrival_delta:.1f}',
+                # H — signals & label
+                'signal_util':         int(signal_util),
+                'signal_drop':         int(signal_drop),
+                'zone_label':          zone_label,
+                'congested':           int(congested),
             })
 
-            # ── Per-port status line  (exact from v2) ─────────────────────
+            # ── Per-port status line ──────────────────────────────────────
             bar  = self._util_bar(util_pct)
             flag = ('  ▲U' if signal_util else '   ') + \
                    ('▲D'   if signal_drop else '  ')
             self.logger.info(
                 '  dpid=0x%016x  port=%3s  '
                 'tx=%6.2fM  rx=%6.2fM  util=%5.1f%%  %s  '
-                'Δdrop=[tx=%s rx=%s]%s',
+                'Δdrop=[tx=%s rx=%s]  loss=%.3f%%  '
+                'lat=%.1fms  jit=%.1fms  zone=%s%s',
                 dpid, port_no, tx_mbps, rx_mbps, util_pct, bar,
-                delta_tx_d, delta_rx_d, flag
+                delta_tx_d, delta_rx_d, port_loss_pct,
+                port_latency_ms, port_jitter_ms, zone_label, flag
             )
 
             # ── Update REST API port store ─────────────────────────────────
             port_stats_store[dpid][port_no] = {
-                'tx_bytes':   tx_bytes,
-                'rx_bytes':   rx_bytes,
-                'tx_dropped': tx_dropped,
-                'rx_dropped': rx_dropped,
-                'bw_rx_mbps': round(max(rx_mbps, 0), 4),
-                'bw_tx_mbps': round(max(tx_mbps, 0), 4),
-                'loss_pct':   0.0,
-                'ts':         now,
+                'tx_bytes':          tx_bytes,
+                'rx_bytes':          rx_bytes,
+                'tx_dropped':        tx_dropped,
+                'rx_dropped':        rx_dropped,
+                'bw_rx_mbps':        round(max(rx_mbps, 0), 4),
+                'bw_tx_mbps':        round(max(tx_mbps, 0), 4),
+                'utilization_pct':   round(util_pct, 2),
+                'loss_pct':          round(port_loss_pct, 4),
+                'latency_ms':        round(port_latency_ms, 3),
+                'jitter_ms':         round(port_jitter_ms, 3),
+                'zone_label':        zone_label,
+                'ts':                now,
             }
 
         # ── End-of-reply summary ──────────────────────────────────────────
@@ -537,29 +947,225 @@ class QoSController(app_manager.RyuApp):
         # ── Aggregate per-switch metrics → REST API / dashboard ───────────
         self._aggregate_switch_metrics(dpid, now)
 
-    # ── Aggregate metrics for dashboard  (from qos_controller.py) ────────
+    # ── Aggregate metrics for dashboard — all values now REAL ────────────
     def _aggregate_switch_metrics(self, dpid, ts):
         ports = port_stats_store.get(dpid, {})
         if not ports:
             return
+
         total_bw_rx = sum(p['bw_rx_mbps'] for p in ports.values())
         total_bw_tx = sum(p['bw_tx_mbps'] for p in ports.values())
-        avg_loss    = sum(p['loss_pct']   for p in ports.values()) / max(len(ports), 1)
 
-        latency = random.uniform(2, 15)
-        jitter  = random.uniform(0.5, 5)
-        reward  = compute_reward(total_bw_rx + total_bw_tx, latency, avg_loss, jitter)
+        # Real loss: mean of per-port loss values collected this cycle
+        with self._loss_lock:
+            port_losses = list(self._port_loss.get(dpid, []))
+        avg_loss = (sum(port_losses) / len(port_losses)) if port_losses else 0.0
+
+        # Real latency and jitter: mean across all links whose src_dpid = dpid
+        latency_ms, jitter_ms = self._get_switch_latency_jitter(dpid)
+
+        reward = compute_reward(
+            total_bw_rx + total_bw_tx,
+            latency_ms,
+            avg_loss,
+            jitter_ms,
+        )
 
         metrics_history[dpid].append({
             'ts':         ts,
             'ts_iso':     datetime.fromtimestamp(ts).isoformat(),
             'bw_rx_mbps': round(total_bw_rx, 4),
             'bw_tx_mbps': round(total_bw_tx, 4),
-            'latency_ms': round(latency, 2),
-            'jitter_ms':  round(jitter,  2),
-            'loss_pct':   round(avg_loss, 4),
+            'latency_ms': round(latency_ms, 3),
+            'jitter_ms':  round(jitter_ms,  3),
+            'loss_pct':   round(avg_loss,   4),
             'reward':     reward,
         })
+
+        # Expose latest latency/jitter values in latency_store for REST API
+        with self._probe_lock:
+            for (src_dpid, src_port), entry in self._link_latency.items():
+                if src_dpid == dpid:
+                    latency_store[(src_dpid, src_port)] = {
+                        'src_dpid':    dpid_lib.dpid_to_str(src_dpid),
+                        'src_port':    src_port,
+                        'latency_ms':  round(entry['owd_ms'],    3),
+                        'jitter_ms':   round(entry['jitter_ms'], 3),
+                        'rtt_ms':      round(entry['rtt_ms'],    3),
+                        'ts':          entry['ts'],
+                    }
+
+    # =========================================================================
+    #  LLDP probe helpers
+    # =========================================================================
+
+    def _record_latency(self, src_dpid: int, src_port: int,
+                        owd_ms: float, rtt_ms: float):
+        """
+        Update _link_latency for the link identified by (src_dpid, src_port).
+        Called from _packet_in_handler when a probe reply arrives.
+        Thread-safe via _probe_lock.
+        """
+        key = (src_dpid, src_port)
+        with self._probe_lock:
+            existing = self._link_latency.get(key)
+            if existing is None:
+                # First sample — initialise jitter to 0
+                self._link_latency[key] = {
+                    'owd_ms':    owd_ms,
+                    'jitter_ms': 0.0,
+                    'rtt_ms':    rtt_ms,
+                    'prev_owd':  owd_ms,
+                    'ts':        time.time(),
+                }
+            else:
+                # EWMA jitter:  J_n = α|OWD_n − OWD_{n-1}| + (1−α)J_{n-1}
+                delta_owd  = abs(owd_ms - existing['prev_owd'])
+                new_jitter = (JITTER_ALPHA * delta_owd
+                              + (1.0 - JITTER_ALPHA) * existing['jitter_ms'])
+                self._link_latency[key] = {
+                    'owd_ms':    owd_ms,
+                    'jitter_ms': new_jitter,
+                    'rtt_ms':    rtt_ms,
+                    'prev_owd':  owd_ms,
+                    'ts':        time.time(),
+                }
+
+    def _get_neighbor_util_max(self, dpid: int) -> float:
+        """
+        Return the highest utilization_pct seen across any port on any switch
+        that is directly linked to `dpid` (in either direction).
+
+        Uses link_store (populated by EventLinkAdd) and port_stats_store.
+        Returns 0.0 if no neighbours or no data yet.
+
+        This gives the LSTM a one-hop congestion pressure signal — if my
+        upstream neighbour is saturated, I am likely to become congested soon.
+        """
+        dpid_str  = dpid_lib.dpid_to_str(dpid)
+        neighbor_dpids = set()
+
+        for link in link_store:
+            if link['src_dpid'] == dpid_str:
+                neighbor_dpids.add(link['dst_dpid'])
+            elif link['dst_dpid'] == dpid_str:
+                neighbor_dpids.add(link['src_dpid'])
+
+        max_util = 0.0
+        for nd_str in neighbor_dpids:
+            # Reverse-lookup dpid int from switch_store
+            for dpid_int, info in switch_store.items():
+                if info.get('dpid') == nd_str:
+                    for port_data in port_stats_store.get(dpid_int, {}).values():
+                        u = port_data.get('utilization_pct', 0.0)
+                        if u > max_util:
+                            max_util = u
+                    break
+
+        return round(max_util, 2)
+
+    def _get_switch_latency_jitter(self, dpid: int):
+        """
+        Return (mean_latency_ms, mean_jitter_ms) for all links whose
+        src_dpid == dpid.  Falls back to (0.0, 0.0) if no probes received yet.
+        Stale entries (older than LLDP_PROBE_TIMEOUT * 3) are ignored.
+        """
+        now      = time.time()
+        stale_limit = LLDP_PROBE_TIMEOUT * 3
+        latencies = []
+        jitters   = []
+
+        with self._probe_lock:
+            for (src_dpid, _), entry in self._link_latency.items():
+                if src_dpid != dpid:
+                    continue
+                age = now - entry['ts']
+                if age > stale_limit:
+                    continue
+                latencies.append(entry['owd_ms'])
+                jitters.append(entry['jitter_ms'])
+
+        if not latencies:
+            return 0.0, 0.0
+
+        return (
+            sum(latencies) / len(latencies),
+            sum(jitters)   / len(jitters),
+        )
+
+    # =========================================================================
+    #  LLDP probe loop
+    #  Runs in its own greenlet.  Every LLDP_PROBE_INTERVAL seconds it sends
+    #  one custom LLDP probe out of every port that is part of a known inter-
+    #  switch link (discovered by the topology module via --observe-links).
+    #
+    #  Why only inter-switch ports?  Sending probes out of host-facing ports
+    #  would flood hosts with raw LLDP frames they cannot understand.  We
+    #  restrict to ports that appear in link_store as a src_port.
+    # =========================================================================
+
+    def _lldp_probe_loop(self):
+        self.logger.info('LLDP probe loop started  (interval=%ds)',
+                         LLDP_PROBE_INTERVAL)
+        while True:
+            hub.sleep(LLDP_PROBE_INTERVAL)
+            self._send_lldp_probes()
+
+    def _send_lldp_probes(self):
+        """
+        Send one OFPPacketOut per inter-switch port with our custom LLDP probe.
+        Records the send_time keyed by (src_dpid, src_port).
+        """
+        # Build a set of (src_dpid_str, src_port) from the topology link store
+        # so we can match against switch ports.
+        known_links = set()
+        for link in link_store:
+            known_links.add((link['src_dpid'], link['src_port']))
+
+        with self._dp_lock:
+            dps = list(self._datapaths.items())   # [(dpid_int, datapath), ...]
+
+        for dpid_int, dp in dps:
+            dpid_str = dpid_lib.dpid_to_str(dpid_int)
+            ofproto  = dp.ofproto
+            parser   = dp.ofproto_parser
+
+            for port_no in list(port_stats_store.get(dpid_int, {}).keys()):
+                if port_no in SKIP_PORTS:
+                    continue
+                # Only send on inter-switch links
+                if (dpid_str, port_no) not in known_links:
+                    continue
+
+                send_time = time.time()
+
+                try:
+                    raw_probe = _build_lldp_probe(dpid_int, port_no, send_time)
+                except Exception as exc:
+                    self.logger.debug(
+                        'Failed to build LLDP probe dpid=0x%016x port=%s: %s',
+                        dpid_int, port_no, exc
+                    )
+                    continue
+
+                actions = [parser.OFPActionOutput(port_no)]
+                out     = parser.OFPPacketOut(
+                    datapath=dp,
+                    buffer_id=ofproto.OFP_NO_BUFFER,
+                    in_port=ofproto.OFPP_CONTROLLER,
+                    actions=actions,
+                    data=raw_probe,
+                )
+                try:
+                    dp.send_msg(out)
+                    self.logger.debug(
+                        'LLDP probe sent  dpid=0x%016x  port=%s', dpid_int, port_no
+                    )
+                except Exception as exc:
+                    self.logger.debug(
+                        'Failed to send LLDP probe dpid=0x%016x port=%s: %s',
+                        dpid_int, port_no, exc
+                    )
 
     # =========================================================================
     #  Link discovery  (from qos_controller.py)
@@ -635,7 +1241,7 @@ class QoSController(app_manager.RyuApp):
 
 
 # =============================================================================
-#  REST API  (exact from qos_controller.py)
+#  REST API  (exact from qos_controller.py + new /latency endpoint)
 # =============================================================================
 class QoSRestAPI(ControllerBase):
     def __init__(self, req, link, data, **config):
@@ -733,7 +1339,7 @@ class QoSRestAPI(ControllerBase):
 
     @route('congestion', REST_API_URL + '/congestion', methods=['GET'])
     def get_congestion(self, req, **kwargs):
-        """Live congestion state per port — new endpoint."""
+        """Live congestion state per port."""
         ctrl   = self.controller
         result = {}
         with ctrl._counter_lock:
@@ -748,4 +1354,52 @@ class QoSRestAPI(ControllerBase):
             'congestion':     result,
             'total_episodes': total,
             'ts':             datetime.now().isoformat(),
+        })
+
+    @route('latency', REST_API_URL + '/latency', methods=['GET'])
+    def get_latency(self, req, **kwargs):
+        """
+        Real per-link latency and jitter measured via LLDP probes.
+
+        Response shape:
+        {
+          "links": [
+            {
+              "src_dpid":   "0000000000000001",
+              "src_port":   1,
+              "latency_ms": 2.34,   ← one-way delay (RTT / 2)
+              "jitter_ms":  0.18,   ← EWMA jitter
+              "rtt_ms":     4.68,   ← round-trip time
+              "ts":         1713000000.123
+            },
+            ...
+          ],
+          "ts": "2024-04-13T12:00:00.000"
+        }
+
+        An empty "links" list means no probes have been received yet
+        (topology not yet discovered, or no inter-switch links).
+        """
+        entries = []
+        with self.controller._probe_lock:
+            for entry in self.controller._link_latency.values():
+                entries.append({
+                    'src_dpid':   entry.get('src_dpid',
+                                  dpid_lib.dpid_to_str(0)),
+                    'src_port':   entry.get('src_port', 0),
+                    'latency_ms': round(entry['owd_ms'],    3),
+                    'jitter_ms':  round(entry['jitter_ms'], 3),
+                    'rtt_ms':     round(entry['rtt_ms'],    3),
+                    'ts':         entry['ts'],
+                })
+
+        # Enrich with src_dpid / src_port from latency_store
+        # (populated by _aggregate_switch_metrics)
+        enriched = []
+        for (src_dpid, src_port), store_entry in latency_store.items():
+            enriched.append(store_entry)
+
+        return self._json({
+            'links': enriched if enriched else entries,
+            'ts':    datetime.now().isoformat(),
         })
