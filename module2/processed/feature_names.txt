@@ -1,0 +1,17 @@
+tx_mbps
+rx_mbps
+utilization_pct
+tx_pps
+rx_pps
+bw_headroom_mbps
+delta_tx_dropped
+delta_rx_dropped
+latency_ms
+jitter_ms
+rolling_util_mean
+rolling_drop_sum
+rolling_tx_mean
+rolling_rx_mean
+n_active_flows
+neighbor_util_max
+inter_arrival_delta

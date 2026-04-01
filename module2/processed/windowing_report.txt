@@ -1,0 +1,44 @@
+=================================================================
+  Module II — Task 2: Windowing
+  seq_len = 10 steps (20s of history per window)
+=================================================================
+
+[Step 1] Loading preprocessed data ...
+  X          : (74336, 17)
+  y_binary   : (74336,)
+  y_zone     : (74336,)
+  y_util     : (74336,)
+  port_index : (74336, 2)
+
+[Step 2] Grouping rows by (dpid, port_no) ...
+  Total unique (dpid, port_no) pairs: 92
+  Rows per group — min:808  max:808  mean:808.0
+  Row indices in time order within all groups: True
+
+[Step 3] Sliding windows (seq_len=10, stride=1) ...
+
+[Step 4] Stacking into arrays ...
+  X_windows  : (73508, 10, 17)  (47.7 MB)
+  y_binary_w : (73508,)
+  y_zone_w   : (73508,)
+  y_util_w   : (73508,)
+
+[Step 5] Verifying label distributions in windowed dataset ...
+  Binary — total windows : 73508
+  Binary — not congested : 49437 (67.3%)
+  Binary — congested     : 24071 (32.7%)
+  Zone distribution:
+    0 (normal): 45266 (61.6%)
+    1 (warning): 4171 (5.7%)
+    2 (congested): 24071 (32.7%)
+  Utilization — mean:42.32  max:100.00  min:0.00
+
+[Step 6] Sanity checks ...
+  Shape check passed: (N=73508, seq=10, features=17)
+  Window count check passed: 73508 == 73508
+  NaN in X_windows: False
+  Inf in X_windows: False
+  NaN/Inf check passed
+  Label alignment check passed (window[0] last-row label = 0)
+
+[Step 7] Saving windowed arrays ...

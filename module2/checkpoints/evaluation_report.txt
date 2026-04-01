@@ -1,0 +1,51 @@
+=================================================================
+  Module II — Task 6: Evaluation Report
+=================================================================
+  Checkpoint : epoch 26
+  Test set   : 11186 windows
+
+
+[Step 2] Zone classification metrics (Head A) ...
+  Overall accuracy : 99.22%
+  Macro F1         : 0.9772
+  Weighted F1      : 0.9924
+
+  Per-class breakdown:
+                  precision    recall  f1-score   support
+    
+          normal     1.0000    0.9912    0.9956      6853
+         warning     0.8861    1.0000    0.9396       677
+       congested     1.0000    0.9926    0.9963      3656
+    
+        accuracy                         0.9922     11186
+       macro avg     0.9620    0.9946    0.9772     11186
+    weighted avg     0.9931    0.9922    0.9924     11186
+    
+
+[Step 3] Binary congestion metrics (zone==2 → congested) ...
+  Confusion (binary):
+    TP=3629  FP=0  FN=27  TN=7530
+  Accuracy  : 99.76%
+  Precision : 1.0000  (of predicted congested, 100.0% actually were)
+  Recall    : 0.9926  (of actual congested, 99.3% were caught)
+  F1 score  : 0.9963
+  ROC-AUC   : 1.0000  (using Head B probability)
+
+[Step 4] Congestion probability metrics (Head B) ...
+  Brier score   : 0.0010  (0.0=perfect, 0.25=random, lower is better)
+  Mean prob when not congested : 0.0023
+  Mean prob when congested     : 0.9972
+
+[Step 5] Plotting confusion matrix ...
+  Raw confusion matrix (rows=actual, cols=predicted):
+                      normal     warning   congested
+    normal              6793          60           0
+    warning                0         677           0
+    congested              0          27        3629
+
+[Step 6] Plotting training curves ...
+  Epochs trained : 36
+  Best val loss  : 0.008175  at epoch 26
+  Best val ZAcc  : 99.70%  at epoch 35
+
+[Step 7] Saving evaluation report ...

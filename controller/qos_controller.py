@@ -102,6 +102,25 @@ from ryu.topology.api import get_switch, get_link
 from ryu.app.wsgi import ControllerBase, WSGIApplication, route
 from webob import Response
 
+# ── Module II LSTM Predictor ─────────────────────────────────────────────────
+# Requirements before this activates:
+#   1. touch ~/sdn-project/module2/__init__.py
+#   2. python3 module2/train.py  (produces best_lstm.pt)
+#   3. Restart controller with: PYTHONPATH=. ryu-manager controller/qos_controller.py
+# Until trained, controller runs normally — predictor is simply None.
+try:
+    import sys as _sys
+    # Add sdn-project/ root to sys.path so 'module2' resolves as a package
+    _controller_dir = os.path.dirname(os.path.abspath(__file__))
+    _project_root   = os.path.dirname(_controller_dir)
+    if _project_root not in _sys.path:
+        _sys.path.insert(0, _project_root)
+    from module2.lstm_predictor import LSTMPredictor
+    _LSTM_AVAILABLE = True
+except ImportError as _lstm_import_err:
+    _LSTM_AVAILABLE = False
+    # To debug: print(f'[LSTM import] {_lstm_import_err}')
+
 
 # ─────────────────────────────────────────────────────────────────
 #  Tunables
@@ -410,6 +429,36 @@ class QoSController(app_manager.RyuApp):
         # ── CSV loggers ───────────────────────────────────────────────────
         self._qos_log  = CSVLogger(QOS_CSV_FILE,  QOS_COLUMNS)
         self._cong_log = CSVLogger(CONG_CSV_FILE, CONG_COLUMNS)
+
+        # ── Module II LSTM Predictor ──────────────────────────────────────
+        self.predictor = None
+        if _LSTM_AVAILABLE:
+            try:
+                self.predictor = LSTMPredictor(
+                    ckpt_path    = 'module2/checkpoints/best_lstm.pt',
+                    scaler_path  = 'module2/processed/scaler.pkl',
+                    feature_path = 'module2/processed/feature_names.txt',
+                )
+                self.predictor.load()
+                self.logger.info(
+                    'LSTM Predictor loaded — Module II active '
+                    '(warmup: first prediction after 10 polling cycles per port)'
+                )
+            except FileNotFoundError as e:
+                self.predictor = None
+                self.logger.warning(
+                    'LSTM Predictor: checkpoint not found (%s). '
+                    'Run python3 module2/train.py first, then restart.', e
+                )
+            except Exception as e:
+                self.predictor = None
+                self.logger.error('LSTM Predictor load error: %s', e)
+        else:
+            self.logger.warning(
+                'LSTM module not importable. Check: '
+                '(1) module2/__init__.py exists, '
+                '(2) run with PYTHONPATH=. ryu-manager ...'
+            )
 
         # ── LLDP probe tracking ───────────────────────────────────────────
         #
@@ -905,6 +954,37 @@ class QoSController(app_manager.RyuApp):
                 'zone_label':          zone_label,
                 'congested':           int(congested),
             })
+
+            # ── Module II: LSTM Predictor update ──────────────────────────
+            if self.predictor is not None:
+                _row = {
+                    'tx_mbps':             tx_mbps,
+                    'rx_mbps':             rx_mbps,
+                    'utilization_pct':     util_pct,
+                    'tx_pps':              tx_pps,
+                    'rx_pps':              rx_pps,
+                    'bw_headroom_mbps':    bw_headroom_mbps,
+                    'delta_tx_dropped':    delta_tx_d,
+                    'delta_rx_dropped':    delta_rx_d,
+                    'latency_ms':          port_latency_ms,
+                    'jitter_ms':           port_jitter_ms,
+                    'rolling_util_mean':   rolling_util_mean,
+                    'rolling_drop_sum':    rolling_drop_sum,
+                    'rolling_tx_mean':     rolling_tx_mean,
+                    'rolling_rx_mean':     rolling_rx_mean,
+                    'n_active_flows':      n_active_flows,
+                    'neighbor_util_max':   neighbor_util_max,
+                    'inter_arrival_delta': inter_arrival_delta,
+                }
+                _sv = self.predictor.update(dpid, port_no, _row)
+                if _sv is not None:
+                    _zone_names = ['normal', 'warning', 'congested']
+                    _pred_zone  = _zone_names[int(_sv[:3].argmax())]
+                    self.logger.debug(
+                        '  LSTM  dpid=0x%016x  port=%s  '
+                        'pred_zone=%s  P(cong)=%.3f  cong_prob=%.3f',
+                        dpid, port_no, _pred_zone, _sv[2], _sv[3]
+                    )
 
             # ── Per-port status line ──────────────────────────────────────
             bar  = self._util_bar(util_pct)
@@ -1402,4 +1482,51 @@ class QoSRestAPI(ControllerBase):
         return self._json({
             'links': enriched if enriched else entries,
             'ts':    datetime.now().isoformat(),
+        })
+
+    @route('prediction', REST_API_URL + '/prediction', methods=['GET'])
+    def get_prediction(self, req, **kwargs):
+        """
+        LSTM state vectors for all ports — consumed by Module III DQN.
+        Returns 'ready: false' until training is complete and controller restarted.
+        """
+        ctrl = self.controller
+        if ctrl.predictor is None:
+            return self._json({
+                'ready':       False,
+                'ports_ready': 0,
+                'predictions': {},
+                'message':     (
+                    'LSTM predictor not loaded. '
+                    'Ensure: (1) module2/__init__.py exists, '
+                    '(2) python3 module2/train.py completed, '
+                    '(3) restart controller with PYTHONPATH=. ryu-manager ...'
+                ),
+                'ts':          datetime.now().isoformat(),
+            })
+
+        all_sv     = ctrl.predictor.state_vector_all()
+        zone_names = ['normal', 'warning', 'congested']
+        result     = {}
+
+        for (dpid_str, port_no), sv in all_sv.items():
+            pred_zone = zone_names[int(sv[:3].argmax())]
+            result.setdefault(dpid_str, {})[str(port_no)] = {
+                'P_normal':         round(float(sv[0]), 4),
+                'P_warning':        round(float(sv[1]), 4),
+                'P_congested':      round(float(sv[2]), 4),
+                'cong_prob':        round(float(sv[3]), 4),
+                'is_congested':     int(sv[4]),
+                'utilization_pct':  round(float(sv[5]), 2),
+                'bw_headroom_mbps': round(float(sv[6]), 2),
+                'delta_tx_dropped': round(float(sv[7]), 0),
+                'latency_ms':       round(float(sv[8]), 3),
+                'pred_zone':        pred_zone,
+            }
+
+        return self._json({
+            'ready':       True,
+            'ports_ready': ctrl.predictor.n_ports_ready,
+            'predictions': result,
+            'ts':          datetime.now().isoformat(),
         })

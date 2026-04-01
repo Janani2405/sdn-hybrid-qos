@@ -1,0 +1,19 @@
+=================================================================
+  Module II — Task 5: Training Report
+=================================================================
+  Total epochs run  : 36
+  Best epoch        : 26
+  Best val loss     : 0.008175
+  Best val zone acc : 0.9946
+  Total train time  : 333.3s  (5.6 min)
+  Time per epoch    : 9.3s
+
+  Final epoch metrics:
+    Train loss      : 0.011960
+    Train zone acc  : 0.9947
+    Val   loss      : 0.008381
+    Val   zone acc  : 0.9934
+
+  Saved files:
+    module2/checkpoints/best_lstm.pt
+    module2/checkpoints/history.npy

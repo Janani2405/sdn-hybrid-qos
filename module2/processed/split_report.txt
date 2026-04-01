@@ -1,0 +1,63 @@
+=================================================================
+  Module II — Task 3: Train / Val / Test Split
+  Strategy : port-level split with congestion stratification
+  Ratios   : 70% train / 15% val / 15% test
+  Seed     : 42
+=================================================================
+
+[Step 1] Loading windowed data ...
+  Total windows : 73508
+  Ports         : 92  ×  799 windows each
+
+[Step 2] Computing congestion % per port for stratification ...
+  Congestion % across ports:
+    min  = 10.9%
+    max  = 83.4%
+    mean = 32.7%
+
+[Step 3] Stratifying ports by congestion level ...
+  Low  congestion ports (<20%)  : 18
+  Mid  congestion ports (20-60%): 62
+  High congestion ports (>=60%) : 12
+
+[Step 4] Assigning ports to train / val / test ...
+  Train ports : 64  (low=13 mid=43 high=8)
+  Val   ports : 14  (low=3 mid=9 high=2)
+  Test  ports : 14  (low=2 mid=10 high=2)
+
+[Step 5] Converting port assignments to window indices ...
+  Train windows : 51136
+  Val   windows : 11186
+  Test  windows : 11186
+  Total         : 73508 (expected 73508)
+
+[Step 6] Verifying zero overlap between splits ...
+  Train ∩ Val  overlap : 0
+  Train ∩ Test overlap : 0
+  Val   ∩ Test overlap : 0
+  No overlap confirmed — zero data leakage
+
+[Step 7] Label distributions across splits ...
+
+  Train (51136 windows):
+    Binary — congested    : 16491 (32.2%)
+    Binary — not congested: 34645 (67.8%)
+    Zone 0 (normal): 31811 (62.2%)
+    Zone 1 (warning): 2834 (5.5%)
+    Zone 2 (congested): 16491 (32.2%)
+
+  Val (11186 windows):
+    Binary — congested    : 3924 (35.1%)
+    Binary — not congested: 7262 (64.9%)
+    Zone 0 (normal): 6602 (59.0%)
+    Zone 1 (warning): 660 (5.9%)
+    Zone 2 (congested): 3924 (35.1%)
+
+  Test (11186 windows):
+    Binary — congested    : 3656 (32.7%)
+    Binary — not congested: 7530 (67.3%)
+    Zone 0 (normal): 6853 (61.3%)
+    Zone 1 (warning): 677 (6.1%)
+    Zone 2 (congested): 3656 (32.7%)
+
+[Step 8] Saving split indices ...

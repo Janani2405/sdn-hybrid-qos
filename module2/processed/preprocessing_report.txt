@@ -1,0 +1,62 @@
+=================================================================
+  Module II — Task 1: Data Preparation
+=================================================================
+
+[Step 1] Loading logs/qos_log.csv ...
+  Raw shape : (74336, 30)  (74336 rows × 30 columns)
+  Columns   : ['timestamp', 'dpid', 'port_no', 'tx_bytes', 'rx_bytes', 'tx_dropped', 'rx_dropped', 'tx_mbps', 'rx_mbps', 'utilization_pct', 'loss_pct', 'tx_pps', 'rx_pps', 'bw_headroom_mbps', 'delta_tx_dropped', 'delta_rx_dropped', 'latency_ms', 'jitter_ms', 'rtt_ms', 'rolling_util_mean', 'rolling_drop_sum', 'rolling_tx_mean', 'rolling_rx_mean', 'n_active_flows', 'neighbor_util_max', 'inter_arrival_delta', 'signal_util', 'signal_drop', 'zone_label', 'congested']
+
+[Step 2] Dropping columns ...
+  Dropping identity    : ['timestamp', 'dpid', 'port_no']
+  Dropping raw counters: ['tx_bytes', 'rx_bytes', 'tx_dropped', 'rx_dropped']
+  Dropping leaking     : ['signal_util', 'signal_drop']
+  Dropping zero-var    : ['loss_pct']
+  Dropping redundant   : ['rtt_ms']
+  Shape after drop: (74336, 19)
+
+[Step 3] Clipping tx_mbps and rx_mbps to 500.0 Mbps ...
+  tx_mbps: max before=28926.73  rows clipped=1155
+  rx_mbps: max before=28926.20  rows clipped=1175
+  bw_headroom_mbps NOT clipped (already controller-bounded to 100)
+
+[Step 4] Fitting StandardScaler on 17 features ...
+  Feature matrix shape : (74336, 17)
+  Features (in order)  :
+    [00] tx_mbps                    mean=48.0569  std=106.6668
+    [01] rx_mbps                    mean=48.0167  std=107.3241
+    [02] utilization_pct            mean=41.8528  std=45.7886
+    [03] tx_pps                     mean=11998.2861  std=110154.3109
+    [04] rx_pps                     mean=11998.2588  std=110322.0604
+    [05] bw_headroom_mbps           mean=58.1470  std=45.7884
+    [06] delta_tx_dropped           mean=0.0000  std=1.0000
+    [07] delta_rx_dropped           mean=0.0000  std=1.0000
+    [08] latency_ms                 mean=39.8443  std=48.4035
+    [09] jitter_ms                  mean=23.3537  std=31.1785
+    [10] rolling_util_mean          mean=41.8529  std=42.1415
+    [11] rolling_drop_sum           mean=0.0000  std=1.0000
+    [12] rolling_tx_mean            mean=95.9864  std=577.8223
+    [13] rolling_rx_mean            mean=95.9861  std=578.1241
+    [14] n_active_flows             mean=14.6671  std=42.3983
+    [15] neighbor_util_max          mean=64.6652  std=44.8121
+    [16] inter_arrival_delta        mean=43.1424  std=54.1333
+
+[Step 5] Encoding zone_label ...
+  Encoding: {np.str_('normal'): np.int64(0), np.str_('warning'): np.int64(1), np.str_('congested'): np.int64(2)}
+  Distribution:
+    0 (normal): 46094 rows (62.0%)
+    1 (warning): 4171 rows (5.6%)
+    2 (congested): 24071 rows (32.4%)
+
+[Step 6] Extracting targets ...
+  y_binary  shape=(74336,)  positive=24071 (32.4%)
+  y_zone    shape=(74336,)
+  y_util    shape=(74336,)  mean=41.85  max=100.00
+  port_index shape=(74336, 2)  unique ports=92
+
+[Step 7] Class imbalance analysis ...
+  Binary — negative (not congested): 50265
+  Binary — positive (congested)    : 24071
+  Recommended pos_weight for BCEWithLogitsLoss: 2.0882
+  (meaning: weight each positive example 2.09× more than negative)
+
+[Step 8] Saving outputs ...
