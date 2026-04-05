@@ -11,9 +11,16 @@ Topology: sudo mn --controller remote --topo tree,fanout=2,depth=5
 What this script does:
   Step 1 — Kill any leftover iperf3 processes on ALL 32 hosts
   Step 2 — Read the CSV to find which hosts are actually used as dst
-  Step 3 — Start iperf3 servers ONLY on those dst hosts
+  Step 3 — Start persistent iperf3 servers on those dst hosts (FIX: no --one-off)
   Step 4 — Verify a sample of src→dst pairs (quick 1s test flow)
   Step 5 — Load simulate_traffic_v2.py and call run_simulation()
+
+STABILITY FIXES (v2.1)
+=======================
+  FIX: Servers now use plain 'iperf3 -s' (persistent) instead of the
+       '--one-off' restart loop. This eliminates the 50-200ms window
+       where the server was dead between clients, which caused immediate
+       rc=1 FAILs that were mistaken for controller-offline failures.
 """
 
 import os
@@ -29,6 +36,7 @@ CSV_PATH       = 'tests/simulation_traffic_profile.csv'
 #CSV_PATH = 'tests/simulation_traffic_profile_test.csv'
 SIM_SCRIPT     = 'tests/simulate_traffic_v2.py'
 LOG_DIR        = 'logs'
+IPERF_CMD      = 'iperf3'
 SERVER_PORTS   = list(range(5201, 5217))   # 16 ports
 MAX_CONCURRENT = 16
 
@@ -92,28 +100,35 @@ print(f'  Unique src→dst pairs: {len(unique_pairs)}')
 # ─────────────────────────────────────────────────────────────────
 #  STEP 3 — Start iperf3 servers ONLY on dst hosts from the CSV
 # ─────────────────────────────────────────────────────────────────
-print(f'\n[Step 3] Starting iperf3 servers on {len(dst_hosts)} dst hosts, '
+print(f'\n[Step 3] Starting persistent iperf3 servers on {len(dst_hosts)} dst hosts, '
       f'{len(SERVER_PORTS)} ports each...')
 os.makedirs(LOG_DIR, exist_ok=True)
 
 for hname in dst_hosts:
+    if net_obj is not None:
+        h = net_obj.get(hname)
+        # NOTE: Do NOT pkill here. Mininet hosts share a PID namespace,
+        # so pkill -f iperf3 on h4 kills h2's servers too (global kill).
+        # Step 1 already killed all leftover iperf3 before this loop.
     for port in SERVER_PORTS:
         logfile = f'/tmp/iperf3_{hname}_{port}.log'
-        cmd = (f'while true; do iperf3 -s -p {port} --one-off '
-               f'>> {logfile} 2>&1; done')
         if net_obj is not None:
-            h = net_obj.get(hname)
-            h.cmd(cmd + ' &')
+            # Use h.popen() NOT h.cmd('... &') — h.cmd with & is unreliable
+            # in Mininet: subsequent h.cmd() calls can kill the backgrounded
+            # process or block waiting for its output. h.popen() creates a
+            # real persistent subprocess in the host's network namespace.
+            with open(logfile, 'a') as lf:
+                h.popen(['iperf3', '-s', '-p', str(port)],
+                        stdout=lf, stderr=lf)
         else:
             subprocess.Popen(
-                ['bash', '-c', f'while true; do iperf3 -s -p {port} --one-off; done'],
+                [IPERF_CMD, '-s', '-p', str(port)],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
             )
-        time.sleep(0.03)
-    print(f'  {hname}: servers started on {len(SERVER_PORTS)} ports')
+    print(f'  {hname}: {len(SERVER_PORTS)} persistent servers started')
 
-print('  Waiting 2.5s for servers to settle...')
-time.sleep(2.5)
+print('  Waiting 2.0s for servers to bind ports...')
+time.sleep(2.0)
 
 # ─────────────────────────────────────────────────────────────────
 #  STEP 4 — Verify a sample of src→dst pairs
@@ -142,8 +157,8 @@ for src_name, dst_name in sample_pairs:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
         out, err = proc.communicate(timeout=12)
-        out_str  = (out or b'').decode('utf-8', errors='replace')
-        err_str  = (err or b'').decode('utf-8', errors='replace')
+        out_str  = out.decode('utf-8', errors='replace') if isinstance(out, bytes) else (out or '')
+        err_str  = err.decode('utf-8', errors='replace') if isinstance(err, bytes) else (err or '')
 
         if proc.returncode == 0 or any(k in out_str for k in ('Mbits','sender','receiver')):
             print(f'  {src_name}→{dst_name} ({server_ip}:{port}) — OK')

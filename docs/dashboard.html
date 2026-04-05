@@ -1,1402 +1,2378 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PROJECT RECALL — SDN QoS Dashboard</title>
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@300;400;500;600;700&family=Orbitron:wght@400;700;900&display=swap');
-
-  :root {
-    --bg0:    #020c14;
-    --bg1:    #041825;
-    --bg2:    #061f30;
-    --bg3:    #0a2d45;
-    --accent: #00d4ff;
-    --green:  #00ff9d;
-    --amber:  #ffb300;
-    --red:    #ff3b5c;
-    --purple: #a855f7;
-    --text:   #c8e8f5;
-    --dim:    #4a7a99;
-    --border: #0d3d5a;
-    --glow:   rgba(0,212,255,0.15);
-  }
-
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-
-  body {
-    background: var(--bg0);
-    color: var(--text);
-    font-family: 'Rajdhani', sans-serif;
-    font-size: 14px;
-    min-height: 100vh;
-    overflow-x: hidden;
-  }
-
-  /* ── Scanline overlay ── */
-  body::before {
-    content: '';
-    position: fixed; inset: 0; z-index: 9999;
-    background: repeating-linear-gradient(
-      0deg,
-      transparent,
-      transparent 2px,
-      rgba(0,0,0,0.03) 2px,
-      rgba(0,0,0,0.03) 4px
-    );
-    pointer-events: none;
-  }
-
-  /* ── Header ── */
-  header {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 0 24px;
-    height: 56px;
-    background: linear-gradient(90deg, var(--bg1) 0%, #030e1a 100%);
-    border-bottom: 1px solid var(--border);
-    position: sticky; top: 0; z-index: 100;
-  }
-  .logo {
-    display: flex; align-items: center; gap: 12px;
-  }
-  .logo-icon {
-    width: 32px; height: 32px;
-    border: 2px solid var(--accent);
-    border-radius: 4px;
-    display: grid; place-items: center;
-    position: relative;
-    box-shadow: 0 0 12px var(--glow);
-  }
-  .logo-icon::before {
-    content: '';
-    width: 16px; height: 16px;
-    border: 2px solid var(--accent);
-    border-radius: 50%;
-    animation: pulse 2s ease-in-out infinite;
-  }
-  @keyframes pulse {
-    0%,100% { transform: scale(1); opacity: 1; }
-    50%      { transform: scale(0.8); opacity: 0.5; }
-  }
-  .logo-text { font-family: 'Orbitron', monospace; font-size: 14px; font-weight: 700; color: var(--accent); letter-spacing: 2px; }
-  .logo-sub  { font-size: 10px; color: var(--dim); letter-spacing: 3px; text-transform: uppercase; }
-
-  .header-right { display: flex; align-items: center; gap: 20px; }
-  .status-badge {
-    display: flex; align-items: center; gap: 6px;
-    padding: 4px 12px;
-    border: 1px solid;
-    border-radius: 2px;
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 11px;
-    letter-spacing: 1px;
-  }
-  .status-badge.online  { border-color: var(--green); color: var(--green); }
-  .status-badge.offline { border-color: var(--red);   color: var(--red);   }
-  .status-dot {
-    width: 6px; height: 6px; border-radius: 50%;
-    background: currentColor;
-    animation: blink 1.4s ease-in-out infinite;
-  }
-  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
-
-  .clock { font-family: 'Share Tech Mono', monospace; font-size: 13px; color: var(--dim); }
-
-  /* ── Layout ── */
-  .layout {
-    display: grid;
-    grid-template-columns: 280px 1fr;
-    grid-template-rows: auto 1fr auto;
-    gap: 0;
-    height: calc(100vh - 56px);
-  }
-
-  /* ── Sidebar ── */
-  .sidebar {
-    grid-row: 1 / -1;
-    background: var(--bg1);
-    border-right: 1px solid var(--border);
-    overflow-y: auto;
-    padding: 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-  }
-
-  /* ── Main area ── */
-  .main {
-    display: grid;
-    grid-template-rows: auto 1fr auto;
-    overflow: hidden;
-  }
-
-  /* ── KPI bar ── */
-  .kpi-bar {
-    display: grid;
-    grid-template-columns: repeat(5, 1fr);
-    gap: 1px;
-    background: var(--border);
-    border-bottom: 1px solid var(--border);
-  }
-  .kpi {
-    background: var(--bg1);
-    padding: 14px 16px;
-    position: relative;
-    overflow: hidden;
-  }
-  .kpi::before {
-    content: '';
-    position: absolute; bottom: 0; left: 0; right: 0;
-    height: 2px;
-    background: var(--accent);
-    transform: scaleX(0);
-    transform-origin: left;
-    transition: transform 0.6s ease;
-  }
-  .kpi.updated::before { transform: scaleX(1); }
-  .kpi-label { font-size: 10px; letter-spacing: 2px; color: var(--dim); text-transform: uppercase; margin-bottom: 4px; }
-  .kpi-value { font-family: 'Orbitron', monospace; font-size: 22px; font-weight: 700; line-height: 1; }
-  .kpi-unit  { font-size: 11px; color: var(--dim); margin-top: 2px; }
-  .kpi.accent { --kpi-color: var(--accent); }
-  .kpi.green  { --kpi-color: var(--green);  }
-  .kpi.amber  { --kpi-color: var(--amber);  }
-  .kpi.red    { --kpi-color: var(--red);    }
-  .kpi.purple { --kpi-color: var(--purple); }
-  .kpi-value  { color: var(--kpi-color); }
-
-  /* ── Content grid ── */
-  .content {
-    display: grid;
-    grid-template-columns: 1.2fr 0.8fr;
-    grid-template-rows: 1fr 1fr;
-    gap: 1px;
-    background: var(--border);
-    overflow: hidden;
-  }
-
-  /* Topology spans full left column height */
-  /* .panel.topo-panel {
-    grid-row: 1 / -1;
-  } */
-
-  /* ── Panel ── */
-  .panel {
-    background: var(--bg1);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    position: relative;
-  }
-  .panel.wide { grid-column: 1 / -1; }
-  .panel-header {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 10px 16px;
-    border-bottom: 1px solid var(--border);
-    background: linear-gradient(90deg, var(--bg2), var(--bg1));
-    flex-shrink: 0;
-  }
-  .panel-title {
-    font-family: 'Orbitron', monospace;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 2px;
-    color: var(--accent);
-    text-transform: uppercase;
-  }
-  .panel-badge {
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 10px;
-    padding: 2px 8px;
-    border: 1px solid var(--dim);
-    border-radius: 2px;
-    color: var(--dim);
-  }
-  .panel-body {
-    flex: 1;
-    overflow: hidden;
-    position: relative;
-  }
-
-  /* ── Universal panel fullscreen ── */
-  .panel-expandable.fullscreen {
-    position: fixed;
-    inset: 0;
-    z-index: 999;
-    width: 100vw !important;
-    height: 100vh !important;
-    border-radius: 0;
-    background: var(--bg0);
-  }
-  .panel-expandable.fullscreen .panel-body {
-    height: calc(100vh - 42px) !important;
-  }
-  .fullscreen-btn {
-    background: none;
-    border: 1px solid var(--dim);
-    border-radius: 2px;
-    color: var(--dim);
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 10px;
-    padding: 2px 8px;
-    cursor: pointer;
-    letter-spacing: 1px;
-    transition: border-color 0.2s, color 0.2s;
-    margin-left: 8px;
-    flex-shrink: 0;
-  }
-  .fullscreen-btn:hover { border-color: var(--accent); color: var(--accent); }
-  .fullscreen-btn.active { border-color: var(--red); color: var(--red); 
-    width: 100%; height: 100%;
-    display: block;
-  }
-
-  /* ── Charts ── */
-  .chart-wrap {
-    padding: 12px;
-    height: 100%;
-    position: relative;
-  }
-  canvas.chart {
-    width: 100% !important;
-    height: 100% !important;
-  }
-
-  /* ── Flow table ── */
-  .flow-table-wrap {
-    overflow-y: auto;
-    height: 100%;
-  }
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 11px;
-  }
-  th {
-    position: sticky; top: 0;
-    background: var(--bg2);
-    color: var(--dim);
-    padding: 8px 12px;
-    text-align: left;
-    letter-spacing: 1px;
-    font-weight: 400;
-    border-bottom: 1px solid var(--border);
-  }
-  td {
-    padding: 7px 12px;
-    border-bottom: 1px solid rgba(13,61,90,0.5);
-    color: var(--text);
-    transition: background 0.3s;
-  }
-  tr:hover td { background: var(--bg3); }
-  .td-good   { color: var(--green); }
-  .td-warn   { color: var(--amber); }
-  .td-crit   { color: var(--red);   }
-
-  /* ── Event log ── */
-  .event-log {
-    overflow-y: auto;
-    height: 100%;
-    padding: 8px;
-  }
-  .event-item {
-    display: flex; gap: 10px;
-    padding: 6px 8px;
-    margin-bottom: 4px;
-    border-left: 2px solid var(--dim);
-    background: rgba(255,255,255,0.02);
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 11px;
-    animation: slideIn 0.3s ease;
-  }
-  @keyframes slideIn { from { opacity:0; transform: translateX(-8px); } }
-  .event-item.info    { border-color: var(--accent); }
-  .event-item.success { border-color: var(--green);  }
-  .event-item.warning { border-color: var(--amber);  }
-  .event-item.error   { border-color: var(--red);    }
-  .event-time   { color: var(--dim); flex-shrink: 0; width: 70px; }
-  .event-cat    { color: var(--accent); flex-shrink: 0; width: 70px; }
-  .event-msg    { color: var(--text); }
-
-  /* ── Sidebar widgets ── */
-  .widget-title {
-    font-family: 'Orbitron', monospace;
-    font-size: 10px;
-    letter-spacing: 2px;
-    color: var(--dim);
-    text-transform: uppercase;
-    margin-bottom: 10px;
-    padding-bottom: 6px;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .switch-card {
-    background: var(--bg2);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 12px;
-    margin-bottom: 8px;
-    cursor: pointer;
-    transition: border-color 0.2s, background 0.2s;
-    position: relative;
-    overflow: hidden;
-  }
-  .switch-card::before {
-    content: '';
-    position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
-    background: var(--green);
-  }
-  .switch-card.selected  { border-color: var(--accent); background: var(--bg3); }
-  .switch-card:hover     { border-color: var(--accent); }
-  .switch-card.offline::before { background: var(--red); }
-
-  .sw-name  { font-family: 'Orbitron', monospace; font-size: 13px; color: var(--accent); margin-bottom: 6px; }
-  .sw-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
-  .sw-stat  { font-size: 11px; color: var(--dim); }
-  .sw-val   { color: var(--text); font-weight: 600; }
-
-  .gauge-row {
-    display: flex; align-items: center; gap: 8px;
-    margin-bottom: 6px;
-  }
-  .gauge-label { width: 70px; font-size: 11px; color: var(--dim); }
-  .gauge-bar   { flex: 1; height: 4px; background: var(--bg3); border-radius: 2px; overflow: hidden; }
-  .gauge-fill  { height: 100%; border-radius: 2px; transition: width 0.5s ease, background 0.5s; }
-  .gauge-val   { width: 50px; text-align: right; font-family: 'Share Tech Mono', monospace; font-size: 11px; }
-
-  /* ── Bottom bar ── */
-  .bottom-bar {
-    display: flex; align-items: center; gap: 16px;
-    padding: 6px 16px;
-    background: var(--bg1);
-    border-top: 1px solid var(--border);
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 10px;
-    color: var(--dim);
-    letter-spacing: 1px;
-  }
-  .bb-item { display: flex; align-items: center; gap: 6px; }
-  .bb-dot  { width: 5px; height: 5px; border-radius: 50%; background: var(--green); }
-
-  /* ── Topology node/link styles ── */
-  .topo-loading {
-    position: absolute; inset: 0;
-    display: flex; align-items: center; justify-content: center;
-    flex-direction: column; gap: 12px;
-    color: var(--dim);
-    font-family: 'Share Tech Mono', monospace;
-  }
-  .spinner {
-    width: 32px; height: 32px;
-    border: 2px solid var(--border);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  /* scrollbar */
-  ::-webkit-scrollbar { width: 4px; }
-  ::-webkit-scrollbar-track { background: var(--bg0); }
-  ::-webkit-scrollbar-thumb { background: var(--bg3); border-radius: 2px; }
-  ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
-
-  /* ── Responsive ── */
-  @media (max-width: 1200px) {
-    .kpi-bar { grid-template-columns: repeat(3, 1fr); }
-  }
-</style>
-</head>
-<body>
-
-<!-- ═══════════════════ HEADER ═══════════════════ -->
-<header>
-  <div class="logo">
-    <div class="logo-icon"></div>
-    <div>
-      <div class="logo-text">PROJECT RECALL</div>
-      <div class="logo-sub">SDN QoS Intelligence Layer — Phase 1</div>
-    </div>
-  </div>
-  <div class="header-right">
-    <div id="controller-status" class="status-badge offline">
-      <div class="status-dot"></div>
-      <span>CONTROLLER OFFLINE</span>
-    </div>
-    <div class="clock" id="clock">--:--:--</div>
-  </div>
-</header>
-
-<!-- ═══════════════════ LAYOUT ═══════════════════ -->
-<div class="layout">
-
-  <!-- ──────── SIDEBAR ──────── -->
-  <aside class="sidebar">
-    <div>
-      <div class="widget-title">Active Switches</div>
-      <div id="switch-list">
-        <div class="topo-loading">
-          <div class="spinner"></div>
-          <span>Waiting for controller...</span>
-        </div>
-      </div>
-    </div>
-
-    <div>
-      <div class="widget-title">Selected Switch Metrics</div>
-      <div id="gauge-panel">
-        <div id="gauge-bw"     class="gauge-row"><span class="gauge-label">BW Rx</span><div class="gauge-bar"><div class="gauge-fill" style="width:0%;background:var(--accent)"></div></div><span class="gauge-val">0 Mbps</span></div>
-        <div id="gauge-tx"     class="gauge-row"><span class="gauge-label">BW Tx</span><div class="gauge-bar"><div class="gauge-fill" style="width:0%;background:var(--green)"></div></div><span class="gauge-val">0 Mbps</span></div>
-        <div id="gauge-lat"    class="gauge-row"><span class="gauge-label">Latency</span><div class="gauge-bar"><div class="gauge-fill" style="width:0%;background:var(--amber)"></div></div><span class="gauge-val">0 ms</span></div>
-        <div id="gauge-jitter" class="gauge-row"><span class="gauge-label">Jitter</span><div class="gauge-bar"><div class="gauge-fill" style="width:0%;background:var(--purple)"></div></div><span class="gauge-val">0 ms</span></div>
-        <div id="gauge-loss"   class="gauge-row"><span class="gauge-label">Loss</span><div class="gauge-bar"><div class="gauge-fill" style="width:0%;background:var(--red)"></div></div><span class="gauge-val">0%</span></div>
-      </div>
-    </div>
-
-    <div>
-      <div class="widget-title">DQN Reward Signal</div>
-      <div style="text-align:center; padding:12px 0">
-        <div style="font-family:'Orbitron',monospace; font-size:32px; font-weight:900" id="reward-display">—</div>
-        <div style="font-size:11px; color:var(--dim); margin-top:4px">Σ reward (preview for Phase 4)</div>
-      </div>
-    </div>
-
-    <div>
-      <div class="widget-title">Dataset Status</div>
-      <div style="font-family:'Share Tech Mono',monospace; font-size:11px; color:var(--dim)">
-        <div style="display:flex;justify-content:space-between;margin-bottom:6px">
-          <span>Samples collected</span>
-          <span style="color:var(--green)" id="ds-samples">0</span>
-        </div>
-        <div style="display:flex;justify-content:space-between;margin-bottom:6px">
-          <span>Poll interval</span>
-          <span style="color:var(--text)">2s</span>
-        </div>
-        <div style="display:flex;justify-content:space-between">
-          <span>Status</span>
-          <span id="ds-status" style="color:var(--amber)">WAITING</span>
-        </div>
-      </div>
-    </div>
-  </aside>
-
-  <!-- ──────── MAIN ──────── -->
-  <div class="main">
-
-    <!-- KPI Bar -->
-    <div class="kpi-bar">
-      <div class="kpi accent">
-        <div class="kpi-label">Total Bandwidth</div>
-        <div class="kpi-value" id="kpi-bw">0.00</div>
-        <div class="kpi-unit">Mbps aggregate</div>
-      </div>
-      <div class="kpi green">
-        <div class="kpi-label">Avg Latency</div>
-        <div class="kpi-value" id="kpi-lat">—</div>
-        <div class="kpi-unit">milliseconds</div>
-      </div>
-      <div class="kpi amber">
-        <div class="kpi-label">Avg Packet Loss</div>
-        <div class="kpi-value" id="kpi-loss">—</div>
-        <div class="kpi-unit">percent</div>
-      </div>
-      <div class="kpi red">
-        <div class="kpi-label">Active Switches</div>
-        <div class="kpi-value" id="kpi-switches">0</div>
-        <div class="kpi-unit">connected</div>
-      </div>
-      <div class="kpi purple">
-        <div class="kpi-label">Total Flows</div>
-        <div class="kpi-value" id="kpi-flows">0</div>
-        <div class="kpi-unit">active rules</div>
-      </div>
-    </div>
-
-    <!-- Content grid -->
-    <div class="content">
-
-      <!-- Topology — full left column -->
-      <div class="panel topo-panel panel-expandable" id="topo-panel">
-        <div class="panel-header">
-          <span class="panel-title">⬡ Network Topology</span>
-          <div style="display:flex;align-items:center;gap:8px;">
-            <span class="panel-badge" id="topo-badge">0 nodes · 0 links</span>
-            <button class="fullscreen-btn" onclick="expandPanel('topo-panel')">⛶ EXPAND</button>
-          </div>
-        </div>
-        <div class="panel-body">
-          <canvas id="topology-canvas"></canvas>
-          <div id="topo-overlay" class="topo-loading">
-            <div class="spinner"></div>
-            <span>Discovering topology...</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Bandwidth chart — top right -->
-      <div class="panel panel-expandable" id="bw-panel">
-        <div class="panel-header">
-          <span class="panel-title">◈ Bandwidth History</span>
-          <div style="display:flex;align-items:center;gap:8px;">
-            <span class="panel-badge">60s window</span>
-            <button class="fullscreen-btn" onclick="expandPanel('bw-panel')">⛶ EXPAND</button>
-          </div>
-        </div>
-        <div class="panel-body">
-          <div class="chart-wrap">
-            <canvas id="bw-chart" class="chart"></canvas>
-          </div>
-        </div>
-      </div>
-
-        <!-- Latency/Jitter -->
-        <div class="panel panel-expandable" id="lat-panel" style="flex:1;display:flex;flex-direction:column;border-bottom:1px solid var(--border);overflow:hidden;background:var(--bg1);">
-          <div class="panel-header">
-            <span class="panel-title">◈ Latency & Jitter</span>
-            <div style="display:flex;align-items:center;gap:8px;">
-              <span class="panel-badge">live</span>
-              <button class="fullscreen-btn" onclick="expandPanel('lat-panel')">⛶ EXPAND</button>
-            </div>
-          </div>
-          <div class="panel-body">
-            <div class="chart-wrap">
-              <canvas id="lat-chart" class="chart"></canvas>
-            </div>
-          </div>
-        </div>
-
-        <!-- Flow table -->
-        <div class="panel panel-expandable" id="flow-panel" style="flex:1;display:flex;flex-direction:column;overflow:hidden;background:var(--bg1);">
-          <div class="panel-header">
-            <span class="panel-title">▦ Flow Table</span>
-            <div style="display:flex;align-items:center;gap:8px;">
-              <span class="panel-badge" id="flow-count-badge">0 entries</span>
-              <button class="fullscreen-btn" onclick="expandPanel('flow-panel')">⛶ EXPAND</button>
-            </div>
-          </div>
-          <div class="panel-body">
-            <div class="flow-table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>SWITCH</th>
-                    <th>FLOW KEY</th>
-                    <th>PACKETS</th>
-                    <th>BYTES</th>
-                    <th>DURATION</th>
-                  </tr>
-                </thead>
-                <tbody id="flow-tbody">
-                  <tr><td colspan="5" style="text-align:center;color:var(--dim);padding:20px">No flows yet</td></tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-
-
-    </div><!-- /content -->
-
-    <!-- Bottom bar -->
-    <div class="bottom-bar">
-      <div class="bb-item"><div class="bb-dot"></div><span>MININET TOPOLOGY ACTIVE</span></div>
-      <div class="bb-item"><div class="bb-dot" style="background:var(--accent)"></div><span>RYU CONTROLLER v4</span></div>
-      <div class="bb-item"><div class="bb-dot" style="background:var(--purple)"></div><span>OPENFLOW 1.3</span></div>
-      <div style="margin-left:auto; font-size:10px;" id="last-update">LAST UPDATE: —</div>
-    </div>
-
-  </div><!-- /main -->
-
-</div><!-- /layout -->
-
-<!-- ════════════════════ EVENT LOG (floating) ════════════════════ -->
-<div style="position:fixed; bottom:32px; right:16px; width:320px; max-height:220px;
-            background:var(--bg1); border:1px solid var(--border); z-index:50;
-            display:flex; flex-direction:column; border-radius:4px;">
-  <div style="padding:8px 12px; border-bottom:1px solid var(--border);
-              font-family:'Orbitron',monospace; font-size:10px; letter-spacing:2px; color:var(--accent)">
-    ▸ EVENT LOG
-  </div>
-  <div class="event-log" id="event-log" style="max-height:180px"></div>
-</div>
-
-<!-- Chart.js -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
-
-<script>
-// ════════════════════════════════════════════════════════════════
-//  CONFIG
-// ════════════════════════════════════════════════════════════════
-const API   = 'http://127.0.0.1:8080/qos/api/v1';
-const POLL  = 2000;  // ms
-const MAX_PTS = 60;  // chart history points
-
-// ════════════════════════════════════════════════════════════════
-//  STATE
-// ════════════════════════════════════════════════════════════════
-let state = {
-  online:        false,
-  switches:      {},   // dpid -> latest metric
-  topology:      { switches: [], links: [] },
-  flows:         {},
-  selectedDpid:  null,
-  totalSamples:  0,
-  chartData: {
-    labels:   [],
-    bwRx:     [],
-    bwTx:     [],
-    latency:  [],
-    jitter:   [],
-  }
-};
-
-// ════════════════════════════════════════════════════════════════
-//  CLOCK
-// ════════════════════════════════════════════════════════════════
-setInterval(() => {
-  document.getElementById('clock').textContent =
-    new Date().toLocaleTimeString('en-GB', {hour12:false});
-}, 1000);
-
-// ════════════════════════════════════════════════════════════════
-//  API FETCH HELPERS
-// ════════════════════════════════════════════════════════════════
-async function apiFetch(path) {
-  try {
-    const r = await fetch(`${API}/${path}`, {
-      signal: AbortSignal.timeout(3000)
-    });
-    return r.ok ? r.json() : null;
-  } catch { return null; }
-}
-
-// ════════════════════════════════════════════════════════════════
-//  CHARTS SETUP
-// ════════════════════════════════════════════════════════════════
-const chartDefaults = {
-  responsive: true,
-  maintainAspectRatio: false,
-  animation: { duration: 300 },
-  plugins: { legend: { labels: { color: '#4a7a99', font: { size: 11 } } } },
-  scales: {
-    x: {
-      ticks: { color: '#4a7a99', maxTicksLimit: 8, font:{size:9} },
-      grid:  { color: 'rgba(13,61,90,0.5)' }
-    },
-    y: {
-      ticks: { color: '#4a7a99', font:{size:9} },
-      grid:  { color: 'rgba(13,61,90,0.5)' }
-    }
-  }
-};
-
-const bwChart = new Chart(document.getElementById('bw-chart'), {
-  type: 'line',
-  data: {
-    labels: [],
-    datasets: [
-      {
-        label: 'BW Rx (Mbps)',
-        data: [],
-        borderColor: '#00d4ff',
-        backgroundColor: 'rgba(0,212,255,0.1)',
-        fill: true,
-        tension: 0.4,
-        borderWidth: 2,
-        pointRadius: 0,
-      },
-      {
-        label: 'BW Tx (Mbps)',
-        data: [],
-        borderColor: '#00ff9d',
-        backgroundColor: 'rgba(0,255,157,0.06)',
-        fill: true,
-        tension: 0.4,
-        borderWidth: 2,
-        pointRadius: 0,
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SDN QoS Dashboard</title>
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@300;400;500;600;700&family=Orbitron:wght@400;700;900&display=swap");
+      :root {
+        --bg0: #020c14;
+        --bg1: #041825;
+        --bg2: #061f30;
+        --bg3: #0a2d45;
+        --accent: #00d4ff;
+        --green: #00ff9d;
+        --amber: #ffb300;
+        --red: #ff3b5c;
+        --purple: #a855f7;
+        --text: #c8e8f5;
+        --dim: #4a7a99;
+        --border: #0d3d5a;
+        --glow: rgba(0, 212, 255, 0.15);
       }
-    ]
-  },
-  options: { ...chartDefaults }
-});
-
-const latChart = new Chart(document.getElementById('lat-chart'), {
-  type: 'line',
-  data: {
-    labels: [],
-    datasets: [
-      {
-        label: 'Latency (ms)',
-        data: [],
-        borderColor: '#ffb300',
-        backgroundColor: 'rgba(255,179,0,0.08)',
-        fill: true,
-        tension: 0.4,
-        borderWidth: 2,
-        pointRadius: 0,
-      },
-      {
-        label: 'Jitter (ms)',
-        data: [],
-        borderColor: '#a855f7',
-        backgroundColor: 'rgba(168,85,247,0.06)',
-        fill: true,
-        tension: 0.4,
-        borderWidth: 2,
-        pointRadius: 0,
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
       }
-    ]
-  },
-  options: { ...chartDefaults }
-});
-
-function pushChartData(time, bwRx, bwTx, lat, jitter) {
-  const ts = time.split('T')[1]?.split('.')[0] ?? time;
-  [bwChart, latChart].forEach(c => {
-    c.data.labels.push(ts);
-    if (c.data.labels.length > MAX_PTS) c.data.labels.shift();
-  });
-  bwChart.data.datasets[0].data.push(bwRx);
-  bwChart.data.datasets[1].data.push(bwTx);
-  latChart.data.datasets[0].data.push(lat);
-  latChart.data.datasets[1].data.push(jitter);
-  [bwChart.data.datasets[0].data,
-   bwChart.data.datasets[1].data,
-   latChart.data.datasets[0].data,
-   latChart.data.datasets[1].data].forEach(arr => {
-    if (arr.length > MAX_PTS) arr.shift();
-  });
-  bwChart.update();
-  latChart.update();
-}
-
-// ════════════════════════════════════════════════════════════════
-//  TOPOLOGY CANVAS
-// ════════════════════════════════════════════════════════════════
-const topoCanvas = document.getElementById('topology-canvas');
-const topoCtx    = topoCanvas.getContext('2d');
-let topoNodes = [];   // { id, x, y, label, type, active }
-let topoLinks = [];   // { source, target }
-let animFrame = 0;
-
-// ── Universal panel expand/collapse ──────────────────────────
-let expandedPanel = null;
-
-function expandPanel(panelId) {
-  const panel = document.getElementById(panelId);
-  const btn   = panel.querySelector('.fullscreen-btn');
-  const isNowFs = !panel.classList.contains('fullscreen');
-
-  // collapse any currently expanded panel first
-  if (expandedPanel && expandedPanel !== panel) {
-    expandedPanel.classList.remove('fullscreen');
-    const prevBtn = expandedPanel.querySelector('.fullscreen-btn');
-    if (prevBtn) { prevBtn.textContent = '⛶ EXPAND'; prevBtn.classList.remove('active'); }
-    expandedPanel = null;
-  }
-
-  panel.classList.toggle('fullscreen', isNowFs);
-  btn.textContent = isNowFs ? '✕ COLLAPSE' : '⛶ EXPAND';
-  btn.classList.toggle('active', isNowFs);
-  expandedPanel = isNowFs ? panel : null;
-
-  // resize topology canvas if it's involved
-  setTimeout(() => {
-    resizeCanvas();
-    topoCache = { swCount: -1, lkCount: -1 }; // force layout recalc for new size
-    if (state.topology?.switches?.length) buildTopoNodes(state.topology);
-    [bwChart, latChart].forEach(c => c.resize());
-  }, 60);
-}
-
-// ESC collapses any expanded panel
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape' && expandedPanel) {
-    const id = expandedPanel.id;
-    expandPanel(id);
-  }
-});
-
-
-
-function resizeCanvas() {
-  const rect = topoCanvas.parentElement.getBoundingClientRect();
-  topoCanvas.width  = rect.width;
-  topoCanvas.height = rect.height;
-}
-window.addEventListener('resize', () => { resizeCanvas(); renderTopology(); });
-resizeCanvas();
-
-// ── Topology layout cache ─────────────────────────────────────
-let topoCache = { swCount: -1, lkCount: -1 };
-
-function buildTopoNodes(topology) {
-  const sw    = topology.switches || [];
-  const lk    = topology.links    || [];
-  const hosts = topology.hosts    || [];
-
-  // ── Skip rebuild if nothing changed ──
-  const swCount = sw.length, lkCount = lk.length;
-  if (swCount === topoCache.swCount && lkCount === topoCache.lkCount && topoNodes.length > 0) return;
-  topoCache.swCount = swCount;
-  topoCache.lkCount = lkCount;
-
-  if (swCount === 0) { topoNodes = []; topoLinks = []; return; }
-
-  const W = topoCanvas.width;
-  const H = topoCanvas.height;
-  const cx = W / 2;
-
-  // ── Build adjacency ──
-  const adj = {};
-  sw.forEach(s => { adj[s.dpid] = new Set(); });
-  lk.forEach(l => {
-    if (adj[l.src_dpid]) adj[l.src_dpid].add(l.dst_dpid);
-    if (adj[l.dst_dpid]) adj[l.dst_dpid].add(l.src_dpid);
-  });
-
-  const degrees  = sw.map(s => ({ dpid: s.dpid, deg: (adj[s.dpid]||new Set()).size }));
-  const leafCount = degrees.filter(d => d.deg === 1).length;
-
-  // ── Always use tree layout ──
-  // Find root = highest degree node (core switch)
-  const root = degrees.reduce((a, b) => a.deg >= b.deg ? a : b).dpid;
-
-  // BFS to build parent→children map
-  const children = {};
-  sw.forEach(s => { children[s.dpid] = []; });
-  const visited = new Set([root]);
-  const bfsQ = [root];
-  while (bfsQ.length) {
-    const cur = bfsQ.shift();
-    [...(adj[cur]||[])].forEach(nb => {
-      if (!visited.has(nb)) {
-        visited.add(nb);
-        children[cur].push(nb);
-        bfsQ.push(nb);
+      body {
+        background: var(--bg0);
+        color: var(--text);
+        font-family: "Rajdhani", sans-serif;
+        font-size: 14px;
+        min-height: 100vh;
+        overflow-x: hidden;
       }
-    });
-  }
-  // attach any disconnected nodes under root
-  sw.forEach(s => {
-    if (!visited.has(s.dpid)) {
-      children[root].push(s.dpid);
-      children[s.dpid] = children[s.dpid] || [];
-    }
-  });
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        background: repeating-linear-gradient(
+          0deg,
+          transparent,
+          transparent 2px,
+          rgba(0, 0, 0, 0.03) 2px,
+          rgba(0, 0, 0, 0.03) 4px
+        );
+        pointer-events: none;
+      }
 
-  // Post-order: compute subtree leaf count (= width units)
-  const leafW = {};
-  const postOrder = (() => {
-    const result = [], stk = [root];
-    while (stk.length) { const n = stk.pop(); result.push(n); (children[n]||[]).forEach(c => stk.push(c)); }
-    return result.reverse();
-  })();
-  postOrder.forEach(node => {
-    const ch = children[node]||[];
-    leafW[node] = ch.length === 0 ? 1 : ch.reduce((s,c) => s + leafW[c], 0);
-  });
+      /* Header */
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 24px;
+        height: 56px;
+        background: linear-gradient(90deg, var(--bg1) 0%, #030e1a 100%);
+        border-bottom: 1px solid var(--border);
+        position: sticky;
+        top: 0;
+        z-index: 100;
+      }
+      .logo {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .logo-icon {
+        width: 32px;
+        height: 32px;
+        border: 2px solid var(--accent);
+        border-radius: 4px;
+        display: grid;
+        place-items: center;
+        box-shadow: 0 0 12px var(--glow);
+      }
+      .logo-icon::before {
+        content: "";
+        width: 16px;
+        height: 16px;
+        border: 2px solid var(--accent);
+        border-radius: 50%;
+        animation: pulse 2s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          transform: scale(1);
+          opacity: 1;
+        }
+        50% {
+          transform: scale(0.8);
+          opacity: 0.5;
+        }
+      }
+      .logo-text {
+        font-family: "Orbitron", monospace;
+        font-size: 14px;
+        font-weight: 700;
+        color: var(--accent);
+        letter-spacing: 2px;
+      }
+      .logo-sub {
+        font-size: 10px;
+        color: var(--dim);
+        letter-spacing: 3px;
+        text-transform: uppercase;
+      }
+      .header-right {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+      }
+      .status-badge {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 12px;
+        border: 1px solid;
+        border-radius: 2px;
+        font-family: "Share Tech Mono", monospace;
+        font-size: 11px;
+        letter-spacing: 1px;
+      }
+      .status-badge.online {
+        border-color: var(--green);
+        color: var(--green);
+      }
+      .status-badge.offline {
+        border-color: var(--red);
+        color: var(--red);
+      }
+      .status-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: currentColor;
+        animation: blink 1.4s ease-in-out infinite;
+      }
+      @keyframes blink {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.2;
+        }
+      }
+      .clock {
+        font-family: "Share Tech Mono", monospace;
+        font-size: 13px;
+        color: var(--dim);
+      }
 
-  // Compute depth of each node
-  const depth = { [root]: 0 };
-  let maxDepth = 0;
-  const bfsD = [root];
-  while (bfsD.length) {
-    const node = bfsD.shift();
-    (children[node]||[]).forEach(c => {
-      depth[c] = depth[node] + 1;
-      maxDepth = Math.max(maxDepth, depth[c]);
-      bfsD.push(c);
-    });
-  }
+      /* Layout — 3 column: sidebar | main | dqn panel */
+      .layout {
+        display: grid;
+        grid-template-columns: 260px 1fr 300px;
+        height: calc(100vh - 56px);
+      }
 
-  // ── Decide node size based on total switch count ──
-  // Scale down for large topologies so nodes don't overlap
-  const nodeR = swCount <= 10  ? 20
-              : swCount <= 30  ? 16
-              : swCount <= 60  ? 13
-              : swCount <= 127 ? 10
-              : 8;
+      /* Sidebar */
+      .sidebar {
+        background: var(--bg1);
+        border-right: 1px solid var(--border);
+        overflow-y: auto;
+        padding: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
 
-  // ── Compute Y tier spacing ──
-  // Reserve space at bottom for hosts if any
-  const hasHosts  = hosts.length > 0;
-  const hostRowH  = hasHosts ? nodeR * 4 : 0;
-  const topPad    = nodeR * 3;
-  const botPad    = nodeR * 2 + hostRowH;
-  const usableH   = H - topPad - botPad;
-  const tierH     = maxDepth > 0 ? usableH / maxDepth : usableH;
+      /* DQN Panel (right) */
+      .dqn-panel {
+        background: var(--bg1);
+        border-left: 1px solid var(--border);
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+      }
+      .dqn-header {
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--border);
+        background: linear-gradient(90deg, var(--bg2), var(--bg1));
+        flex-shrink: 0;
+      }
+      .dqn-title {
+        font-family: "Orbitron", monospace;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 2px;
+        color: var(--purple);
+        text-transform: uppercase;
+      }
+      .dqn-status-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 6px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--border);
+      }
+      .dqn-stat {
+        background: var(--bg2);
+        padding: 8px 10px;
+        border-radius: 4px;
+        border: 1px solid var(--border);
+      }
+      .dqn-stat-label {
+        font-size: 10px;
+        color: var(--dim);
+        letter-spacing: 1px;
+        text-transform: uppercase;
+      }
+      .dqn-stat-value {
+        font-family: "Orbitron", monospace;
+        font-size: 16px;
+        color: var(--purple);
+        margin-top: 2px;
+      }
 
-  // ── Compute X positions using subtree widths ──
-  const padX    = nodeR * 2;
-  const usableW = W - padX * 2;
-  const xScale  = usableW / leafW[root];
+      /* Decision timeline */
+      .decision-timeline {
+        flex: 1;
+        overflow-y: auto;
+        padding: 8px;
+      }
+      .decision-card {
+        background: var(--bg2);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        margin-bottom: 6px;
+        cursor: pointer;
+        transition: border-color 0.2s;
+      }
+      .decision-card:hover {
+        border-color: var(--purple);
+      }
+      .decision-card.expanded {
+        border-color: var(--purple);
+      }
+      .decision-card.action-0 {
+        border-left: 3px solid var(--dim);
+      }
+      .decision-card.action-1 {
+        border-left: 3px solid var(--amber);
+      }
+      .decision-card.action-2 {
+        border-left: 3px solid var(--red);
+      }
+      .decision-card.action-3 {
+        border-left: 3px solid var(--green);
+      }
+      .decision-card.action-4 {
+        border-left: 3px solid var(--accent);
+      }
+      .dc-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 10px;
+      }
+      .dc-left {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .dc-time {
+        font-family: "Share Tech Mono", monospace;
+        font-size: 10px;
+        color: var(--dim);
+      }
+      .dc-switch {
+        font-size: 11px;
+        color: var(--text);
+      }
+      .dc-action {
+        font-family: "Orbitron", monospace;
+        font-size: 10px;
+        font-weight: 700;
+        padding: 2px 8px;
+        border-radius: 2px;
+      }
+      .dc-action.a0 {
+        background: rgba(74, 122, 153, 0.2);
+        color: var(--dim);
+      }
+      .dc-action.a1 {
+        background: rgba(255, 179, 0, 0.15);
+        color: var(--amber);
+      }
+      .dc-action.a2 {
+        background: rgba(255, 59, 92, 0.15);
+        color: var(--red);
+      }
+      .dc-action.a3 {
+        background: rgba(0, 255, 157, 0.12);
+        color: var(--green);
+      }
+      .dc-action.a4 {
+        background: rgba(0, 212, 255, 0.12);
+        color: var(--accent);
+      }
+      .dc-reward {
+        font-family: "Share Tech Mono", monospace;
+        font-size: 11px;
+      }
+      .dc-reward.pos {
+        color: var(--green);
+      }
+      .dc-reward.neg {
+        color: var(--red);
+      }
+      .dc-body {
+        padding: 0 10px 10px;
+        display: none;
+      }
+      .decision-card.expanded .dc-body {
+        display: block;
+      }
+      .qval-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 4px;
+      }
+      .qval-name {
+        font-size: 10px;
+        color: var(--dim);
+        width: 80px;
+        flex-shrink: 0;
+      }
+      .qval-bar-wrap {
+        flex: 1;
+        height: 4px;
+        background: var(--bg3);
+        border-radius: 2px;
+        overflow: hidden;
+      }
+      .qval-bar {
+        height: 100%;
+        border-radius: 2px;
+        transition: width 0.3s;
+      }
+      .qval-num {
+        font-family: "Share Tech Mono", monospace;
+        font-size: 10px;
+        width: 44px;
+        text-align: right;
+      }
+      .state-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 4px;
+        margin-top: 8px;
+      }
+      .state-item {
+        font-size: 10px;
+        color: var(--dim);
+      }
+      .state-item span {
+        color: var(--text);
+      }
 
-  // BFS to assign x offset (left boundary of each node's subtree)
-  const xOff = { [root]: 0 };
-  const bfsX = [root];
-  while (bfsX.length) {
-    const node = bfsX.shift();
-    let cursor = xOff[node];
-    (children[node]||[]).forEach(child => {
-      xOff[child] = cursor;
-      cursor += leafW[child];
-      bfsX.push(child);
-    });
-  }
+      /* Main */
+      .main {
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        overflow: hidden;
+      }
 
-  // Final position: x = left + half subtree width, y = tier
-  const swPositions = {};
-  sw.forEach(s => {
-    swPositions[s.dpid] = {
-      x: padX + (xOff[s.dpid] + leafW[s.dpid] / 2) * xScale,
-      y: topPad + (depth[s.dpid] ?? 0) * tierH,
-    };
-  });
+      /* KPI bar */
+      .kpi-bar {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 1px;
+        background: var(--border);
+        border-bottom: 1px solid var(--border);
+      }
+      .kpi {
+        background: var(--bg1);
+        padding: 12px 14px;
+      }
+      .kpi-label {
+        font-size: 10px;
+        letter-spacing: 2px;
+        color: var(--dim);
+        text-transform: uppercase;
+        margin-bottom: 4px;
+      }
+      .kpi-value {
+        font-family: "Orbitron", monospace;
+        font-size: 20px;
+        font-weight: 700;
+        line-height: 1;
+      }
+      .kpi-unit {
+        font-size: 10px;
+        color: var(--dim);
+        margin-top: 2px;
+      }
+      .kpi.accent .kpi-value {
+        color: var(--accent);
+      }
+      .kpi.green .kpi-value {
+        color: var(--green);
+      }
+      .kpi.amber .kpi-value {
+        color: var(--amber);
+      }
+      .kpi.red .kpi-value {
+        color: var(--red);
+      }
+      .kpi.purple .kpi-value {
+        color: var(--purple);
+      }
 
-  // ── Build switch nodes ──
-  const dpidToLabel = {};
-  sw.forEach((s, i) => { dpidToLabel[s.dpid] = `s${i+1}`; });
+      /* Content grid */
+      .content {
+        display: grid;
+        grid-template-columns: 1.1fr 0.9fr;
+        grid-template-rows: 1fr 1fr;
+        gap: 1px;
+        background: var(--border);
+        overflow: hidden;
+      }
+      .panel {
+        background: var(--bg1);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 14px;
+        border-bottom: 1px solid var(--border);
+        background: linear-gradient(90deg, var(--bg2), var(--bg1));
+        flex-shrink: 0;
+      }
+      .panel-title {
+        font-family: "Orbitron", monospace;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 2px;
+        color: var(--accent);
+        text-transform: uppercase;
+      }
+      .panel-badge {
+        font-family: "Share Tech Mono", monospace;
+        font-size: 10px;
+        padding: 2px 8px;
+        border: 1px solid var(--dim);
+        border-radius: 2px;
+        color: var(--dim);
+      }
+      .panel-body {
+        flex: 1;
+        overflow: hidden;
+        position: relative;
+      }
+      /* ── Universal panel fullscreen ── */
+      .panel-expandable.fullscreen {
+        position: fixed;
+        inset: 0;
+        z-index: 999;
+        width: 100vw !important;
+        height: 100vh !important;
+        border-radius: 0;
+        background: var(--bg0);
+      }
+      .panel-expandable.fullscreen .panel-body {
+        height: calc(100vh - 42px) !important;
+      }
+      .fullscreen-btn {
+        background: none;
+        border: 1px solid var(--dim);
+        border-radius: 2px;
+        color: var(--dim);
+        font-family: "Share Tech Mono", monospace;
+        font-size: 10px;
+        padding: 2px 8px;
+        cursor: pointer;
+        letter-spacing: 1px;
+        transition:
+          border-color 0.2s,
+          color 0.2s;
+        margin-left: 8px;
+        flex-shrink: 0;
+      }
+      .fullscreen-btn:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      .fullscreen-btn.active {
+        border-color: var(--red);
+        color: var(--red);
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
 
-  const switchNodes = sw.map(s => ({
-    id:     s.dpid,
-    x:      swPositions[s.dpid].x,
-    y:      swPositions[s.dpid].y,
-    label:  dpidToLabel[s.dpid],
-    type:   'switch',
-    active: s.status === 'active',
-    r:      nodeR,
-  }));
+      .chart-wrap {
+        padding: 10px;
+        height: 100%;
+        position: relative;
+      }
+      canvas.chart {
+        width: 100% !important;
+        height: 100% !important;
+      }
 
-  // ── Build host nodes below their leaf switch ──
-  const hostsBySw = {};
-  hosts.forEach(h => {
-    const dpid = h.port?.dpid; if (!dpid) return;
-    if (!hostsBySw[dpid]) hostsBySw[dpid] = [];
-    hostsBySw[dpid].push(h);
-  });
+      /* Topology */
+      .topo-loading {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        gap: 12px;
+        color: var(--dim);
+        font-family: "Share Tech Mono", monospace;
+      }
+      .spinner {
+        width: 28px;
+        height: 28px;
+        border: 2px solid var(--border);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
 
-  const hostR = Math.max(nodeR * 0.6, 6);
-  const hostNodes = []; let hCount = 0;
-  Object.entries(hostsBySw).forEach(([swDpid, hList]) => {
-    const swPos = swPositions[swDpid]; if (!swPos) return;
-    const total  = hList.length;
-    const spread = Math.min(nodeR * 3, (nodeR * 2 * total) / Math.max(total, 1));
-    hList.forEach((h, i) => {
-      hostNodes.push({
-        id:     h.mac,
-        x:      swPos.x + (i - (total-1)/2) * spread,
-        y:      swPos.y + nodeR * 3.5,
-        label:  `h${++hCount}`,
-        type:   'host',
-        mac:    h.mac,
-        ip:     h.ipv4?.[0] || '',
-        swDpid,
-        active: true,
-        r:      hostR,
+      /* Congestion alert banner */
+      .cong-banner {
+        display: none;
+        align-items: center;
+        gap: 10px;
+        padding: 7px 16px;
+        background: rgba(255, 59, 92, 0.12);
+        border-bottom: 1px solid rgba(255, 59, 92, 0.4);
+        font-family: "Share Tech Mono", monospace;
+        font-size: 11px;
+        color: var(--red);
+        letter-spacing: 1px;
+        animation: flashBanner 1s ease-in-out infinite;
+      }
+      @keyframes flashBanner {
+        0%,
+        100% {
+          background: rgba(255, 59, 92, 0.12);
+        }
+        50% {
+          background: rgba(255, 59, 92, 0.22);
+        }
+      }
+      .cong-banner.visible {
+        display: flex;
+      }
+
+      /* Flow table */
+      .flow-table-wrap {
+        overflow-y: auto;
+        height: 100%;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-family: "Share Tech Mono", monospace;
+        font-size: 11px;
+      }
+      th {
+        position: sticky;
+        top: 0;
+        background: var(--bg2);
+        color: var(--dim);
+        padding: 7px 10px;
+        text-align: left;
+        letter-spacing: 1px;
+        font-weight: 400;
+        border-bottom: 1px solid var(--border);
+      }
+      td {
+        padding: 6px 10px;
+        border-bottom: 1px solid rgba(13, 61, 90, 0.5);
+        color: var(--text);
+      }
+      tr:hover td {
+        background: var(--bg3);
+      }
+      .td-good {
+        color: var(--green);
+      }
+      .td-warn {
+        color: var(--amber);
+      }
+      .td-crit {
+        color: var(--red);
+      }
+
+      /* Bottom bar */
+      .bottom-bar {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 5px 14px;
+        background: var(--bg1);
+        border-top: 1px solid var(--border);
+        font-family: "Share Tech Mono", monospace;
+        font-size: 10px;
+        color: var(--dim);
+        letter-spacing: 1px;
+      }
+      .bb-item {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .bb-dot {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: var(--green);
+      }
+
+      /* Sidebar widgets */
+      .widget-title {
+        font-family: "Orbitron", monospace;
+        font-size: 10px;
+        letter-spacing: 2px;
+        color: var(--dim);
+        text-transform: uppercase;
+        margin-bottom: 8px;
+        padding-bottom: 5px;
+        border-bottom: 1px solid var(--border);
+      }
+      .switch-card {
+        background: var(--bg2);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 10px;
+        margin-bottom: 6px;
+        cursor: pointer;
+        transition: border-color 0.2s;
+        position: relative;
+        overflow: hidden;
+      }
+      .switch-card::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 3px;
+        background: var(--green);
+      }
+      .switch-card.selected {
+        border-color: var(--accent);
+        background: var(--bg3);
+      }
+      .switch-card:hover {
+        border-color: var(--accent);
+      }
+      .switch-card.congested::before {
+        background: var(--red);
+        animation: flashBar 1s infinite;
+      }
+      .switch-card.warning::before {
+        background: var(--amber);
+      }
+      @keyframes flashBar {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.3;
+        }
+      }
+      .sw-name {
+        font-family: "Orbitron", monospace;
+        font-size: 11px;
+        color: var(--accent);
+        margin-bottom: 5px;
+      }
+      .sw-stats {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 3px;
+      }
+      .sw-stat {
+        font-size: 11px;
+        color: var(--dim);
+      }
+      .sw-val {
+        color: var(--text);
+        font-weight: 600;
+      }
+      .sw-zone {
+        font-size: 10px;
+        padding: 2px 6px;
+        border-radius: 2px;
+        display: inline-block;
+        margin-top: 4px;
+        font-family: "Share Tech Mono", monospace;
+      }
+      .zone-normal {
+        background: rgba(0, 255, 157, 0.1);
+        color: var(--green);
+      }
+      .zone-warning {
+        background: rgba(255, 179, 0, 0.12);
+        color: var(--amber);
+      }
+      .zone-congested {
+        background: rgba(255, 59, 92, 0.15);
+        color: var(--red);
+      }
+      .zone-critical {
+        background: rgba(255, 59, 92, 0.25);
+        color: var(--red);
+        animation: flashBar 0.8s infinite;
+      }
+
+      .gauge-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 5px;
+      }
+      .gauge-label {
+        width: 60px;
+        font-size: 11px;
+        color: var(--dim);
+      }
+      .gauge-bar {
+        flex: 1;
+        height: 4px;
+        background: var(--bg3);
+        border-radius: 2px;
+        overflow: hidden;
+      }
+      .gauge-fill {
+        height: 100%;
+        border-radius: 2px;
+        transition:
+          width 0.5s ease,
+          background 0.5s;
+      }
+      .gauge-val {
+        width: 52px;
+        text-align: right;
+        font-family: "Share Tech Mono", monospace;
+        font-size: 11px;
+      }
+
+      /* Action distribution mini-bar */
+      .action-dist {
+        margin-top: 6px;
+      }
+      .ad-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 3px;
+      }
+      .ad-name {
+        font-size: 10px;
+        color: var(--dim);
+        width: 72px;
+        flex-shrink: 0;
+      }
+      .ad-bar-wrap {
+        flex: 1;
+        height: 5px;
+        background: var(--bg3);
+        border-radius: 2px;
+        overflow: hidden;
+      }
+      .ad-bar {
+        height: 100%;
+        border-radius: 2px;
+        transition: width 0.4s;
+      }
+      .ad-count {
+        font-family: "Share Tech Mono", monospace;
+        font-size: 10px;
+        width: 32px;
+        text-align: right;
+        color: var(--dim);
+      }
+
+      ::-webkit-scrollbar {
+        width: 3px;
+      }
+      ::-webkit-scrollbar-track {
+        background: var(--bg0);
+      }
+      ::-webkit-scrollbar-thumb {
+        background: var(--bg3);
+        border-radius: 2px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: var(--accent);
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="logo">
+        <div class="logo-icon"></div>
+        <div>
+          <!-- <div class="logo-text">PROJECT RECALL</div> -->
+          <div class="logo-sub">SDN QoS — LSTM + DQN Intelligence Layer</div>
+        </div>
+      </div>
+      <div class="header-right">
+        <div id="dqn-status-badge" class="status-badge offline">
+          <div class="status-dot"></div>
+          <span>DQN OFFLINE</span>
+        </div>
+        <div id="controller-status" class="status-badge offline">
+          <div class="status-dot"></div>
+          <span>CONTROLLER OFFLINE</span>
+        </div>
+        <div class="clock" id="clock">--:--:--</div>
+      </div>
+    </header>
+
+    <!-- Congestion alert banner -->
+    <div class="cong-banner" id="cong-banner">
+      ▲ CONGESTION DETECTED — DQN agent is responding
+      <span
+        id="cong-detail"
+        style="color: var(--amber); margin-left: 8px"
+      ></span>
+    </div>
+
+    <div class="layout">
+      <!-- SIDEBAR -->
+      <aside class="sidebar">
+        <div>
+          <div class="widget-title">Active Switches</div>
+          <div id="switch-list">
+            <div class="topo-loading" style="position: relative; height: 60px">
+              <div class="spinner"></div>
+              <span>Waiting...</span>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div class="widget-title">Selected Switch Metrics</div>
+          <div id="gauge-panel">
+            <div id="gauge-bw" class="gauge-row">
+              <span class="gauge-label">BW Rx</span>
+              <div class="gauge-bar">
+                <div
+                  class="gauge-fill"
+                  style="width: 0%; background: var(--accent)"
+                ></div>
+              </div>
+              <span class="gauge-val">0 Mbps</span>
+            </div>
+            <div id="gauge-tx" class="gauge-row">
+              <span class="gauge-label">BW Tx</span>
+              <div class="gauge-bar">
+                <div
+                  class="gauge-fill"
+                  style="width: 0%; background: var(--green)"
+                ></div>
+              </div>
+              <span class="gauge-val">0 Mbps</span>
+            </div>
+            <div id="gauge-lat" class="gauge-row">
+              <span class="gauge-label">Latency</span>
+              <div class="gauge-bar">
+                <div
+                  class="gauge-fill"
+                  style="width: 0%; background: var(--amber)"
+                ></div>
+              </div>
+              <span class="gauge-val">0 ms</span>
+            </div>
+            <div id="gauge-jitter" class="gauge-row">
+              <span class="gauge-label">Jitter</span>
+              <div class="gauge-bar">
+                <div
+                  class="gauge-fill"
+                  style="width: 0%; background: var(--purple)"
+                ></div>
+              </div>
+              <span class="gauge-val">0 ms</span>
+            </div>
+            <div id="gauge-loss" class="gauge-row">
+              <span class="gauge-label">Loss</span>
+              <div class="gauge-bar">
+                <div
+                  class="gauge-fill"
+                  style="width: 0%; background: var(--red)"
+                ></div>
+              </div>
+              <span class="gauge-val">0%</span>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div class="widget-title">LSTM Prediction (selected)</div>
+          <div id="lstm-gauges">
+            <div class="gauge-row">
+              <span class="gauge-label" style="width: 72px">P(normal)</span>
+              <div class="gauge-bar">
+                <div
+                  id="p-norm-fill"
+                  class="gauge-fill"
+                  style="width: 0%; background: var(--green)"
+                ></div>
+              </div>
+              <span class="gauge-val" id="p-norm-val">—</span>
+            </div>
+            <div class="gauge-row">
+              <span class="gauge-label" style="width: 72px">P(warning)</span>
+              <div class="gauge-bar">
+                <div
+                  id="p-warn-fill"
+                  class="gauge-fill"
+                  style="width: 0%; background: var(--amber)"
+                ></div>
+              </div>
+              <span class="gauge-val" id="p-warn-val">—</span>
+            </div>
+            <div class="gauge-row">
+              <span class="gauge-label" style="width: 72px">P(cong.)</span>
+              <div class="gauge-bar">
+                <div
+                  id="p-cong-fill"
+                  class="gauge-fill"
+                  style="width: 0%; background: var(--red)"
+                ></div>
+              </div>
+              <span class="gauge-val" id="p-cong-val">—</span>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div class="widget-title">DQN Reward</div>
+          <div style="text-align: center; padding: 10px 0">
+            <div
+              style="
+                font-family: &quot;Orbitron&quot;, monospace;
+                font-size: 28px;
+                font-weight: 900;
+              "
+              id="reward-display"
+            >
+              —
+            </div>
+            <div style="font-size: 11px; color: var(--dim); margin-top: 3px">
+              current reward signal
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div class="widget-title">Dataset Status</div>
+          <div
+            style="
+              font-family: &quot;Share Tech Mono&quot;, monospace;
+              font-size: 11px;
+              color: var(--dim);
+            "
+          >
+            <div
+              style="
+                display: flex;
+                justify-content: space-between;
+                margin-bottom: 5px;
+              "
+            >
+              <span>Samples collected</span
+              ><span style="color: var(--green)" id="ds-samples">0</span>
+            </div>
+            <div
+              style="
+                display: flex;
+                justify-content: space-between;
+                margin-bottom: 5px;
+              "
+            >
+              <span>Poll interval</span
+              ><span style="color: var(--text)">2s</span>
+            </div>
+            <div style="display: flex; justify-content: space-between">
+              <span>Status</span
+              ><span id="ds-status" style="color: var(--amber)">WAITING</span>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- MAIN -->
+      <div class="main">
+        <div class="kpi-bar">
+          <div class="kpi accent">
+            <div class="kpi-label">Total Bandwidth</div>
+            <div class="kpi-value" id="kpi-bw">0.00</div>
+            <div class="kpi-unit">Mbps aggregate</div>
+          </div>
+          <div class="kpi green">
+            <div class="kpi-label">Avg Latency</div>
+            <div class="kpi-value" id="kpi-lat">—</div>
+            <div class="kpi-unit">milliseconds</div>
+          </div>
+          <div class="kpi amber">
+            <div class="kpi-label">Avg Packet Loss</div>
+            <div class="kpi-value" id="kpi-loss">—</div>
+            <div class="kpi-unit">percent</div>
+          </div>
+          <div class="kpi red">
+            <div class="kpi-label">Active Switches</div>
+            <div class="kpi-value" id="kpi-switches">0</div>
+            <div class="kpi-unit">connected</div>
+          </div>
+          <div class="kpi purple">
+            <div class="kpi-label">DQN Steps</div>
+            <div class="kpi-value" id="kpi-steps">—</div>
+            <div class="kpi-unit">training steps</div>
+          </div>
+        </div>
+
+        <div class="content">
+          <!-- Topology — full left column -->
+          <div class="panel topo-panel panel-expandable" id="topo-panel">
+            <div class="panel-header">
+              <span class="panel-title">⬡ Network Topology</span>
+              <div style="display: flex; align-items: center; gap: 8px">
+                <span class="panel-badge" id="topo-badge"
+                  >0 nodes · 0 links</span
+                >
+                <button
+                  class="fullscreen-btn"
+                  onclick="expandPanel('topo-panel')"
+                >
+                  ⛶ EXPAND
+                </button>
+              </div>
+            </div>
+            <div class="panel-body">
+              <canvas id="topology-canvas"></canvas>
+              <div id="topo-overlay" class="topo-loading">
+                <div class="spinner"></div>
+                <span>Discovering topology...</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Bandwidth chart — top right -->
+          <div class="panel panel-expandable" id="bw-panel">
+            <div class="panel-header">
+              <span class="panel-title">◈ Bandwidth + Congestion Forecast</span>
+              <div style="display: flex; align-items: center; gap: 8px">
+                <span class="panel-badge">60s window</span>
+                <button
+                  class="fullscreen-btn"
+                  onclick="expandPanel('bw-panel')"
+                >
+                  ⛶ EXPAND
+                </button>
+              </div>
+            </div>
+            <div class="panel-body">
+              <div class="chart-wrap">
+                <canvas id="bw-chart" class="chart"></canvas>
+              </div>
+            </div>
+          </div>
+
+          <!-- Latency/Jitter -->
+          <div
+            class="panel panel-expandable"
+            id="lat-panel"
+            style="
+              flex: 1;
+              display: flex;
+              flex-direction: column;
+              border-bottom: 1px solid var(--border);
+              overflow: hidden;
+              background: var(--bg1);
+            "
+          >
+            <div class="panel-header">
+              <span class="panel-title">◈ Latency & Jitter</span>
+              <div style="display: flex; align-items: center; gap: 8px">
+                <span class="panel-badge">live</span>
+                <button
+                  class="fullscreen-btn"
+                  onclick="expandPanel('lat-panel')"
+                >
+                  ⛶ EXPAND
+                </button>
+              </div>
+            </div>
+            <div class="panel-body">
+              <div class="chart-wrap">
+                <canvas id="lat-chart" class="chart"></canvas>
+              </div>
+            </div>
+          </div>
+
+
+          <!-- DQN Reward curve -->
+          <div class="panel panel-expandable" id="dqn-reward-curve">
+            <div class="panel-header">
+              <span class="panel-title">◈ DQN Reward &amp; Training Loss</span>
+              <div style="display: flex; align-items: center; gap: 8px">
+                <span class="panel-badge" id="dqn-mem-badge">mem: 0</span>
+                <button
+                  class="fullscreen-btn"
+                  onclick="expandPanel('dqn-reward-curve')"
+                >
+                  ⛶ EXPAND
+                </button>
+              </div>
+            </div>
+            <div class="panel-body">
+              <div class="chart-wrap">
+                <canvas id="reward-chart" class="chart"></canvas>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="bottom-bar">
+          <div class="bb-item">
+            <div class="bb-dot"></div>
+            <span>MININET ACTIVE</span>
+          </div>
+          <div class="bb-item">
+            <div class="bb-dot" style="background: var(--accent)"></div>
+            <span>RYU CONTROLLER</span>
+          </div>
+          <div class="bb-item">
+            <div class="bb-dot" style="background: var(--purple)"></div>
+            <span>DQN AGENT PORT 8081</span>
+          </div>
+          <div style="margin-left: auto; font-size: 10px" id="last-update">
+            LAST UPDATE: —
+          </div>
+        </div>
+      </div>
+
+      <!-- DQN PANEL (right) -->
+      <div class="dqn-panel">
+        <div class="dqn-header">
+          <div class="dqn-title">◆ DQN Decision Log</div>
+          <div style="font-size: 10px; color: var(--dim); margin-top: 2px">
+            Click any entry to see Q-values
+          </div>
+        </div>
+
+        <div class="dqn-status-row">
+          <div class="dqn-stat">
+            <div class="dqn-stat-label">Epsilon ε</div>
+            <div class="dqn-stat-value" id="dqn-epsilon">—</div>
+          </div>
+          <div class="dqn-stat">
+            <div class="dqn-stat-label">Avg Reward</div>
+            <div
+              class="dqn-stat-value"
+              id="dqn-avg-reward"
+              style="color: var(--green)"
+            >
+              —
+            </div>
+          </div>
+        </div>
+
+        <!-- Action distribution -->
+        <div style="padding: 8px 14px; border-bottom: 1px solid var(--border)">
+          <div
+            style="
+              font-size: 10px;
+              color: var(--dim);
+              letter-spacing: 1px;
+              margin-bottom: 6px;
+            "
+          >
+            ACTION DISTRIBUTION
+          </div>
+          <div class="action-dist" id="action-dist">
+            <div class="ad-row">
+              <span class="ad-name">do_nothing</span>
+              <div class="ad-bar-wrap">
+                <div
+                  class="ad-bar"
+                  id="ad-0"
+                  style="width: 0%; background: var(--dim)"
+                ></div>
+              </div>
+              <span class="ad-count" id="adc-0">0</span>
+            </div>
+            <div class="ad-row">
+              <span class="ad-name">reroute</span>
+              <div class="ad-bar-wrap">
+                <div
+                  class="ad-bar"
+                  id="ad-1"
+                  style="width: 0%; background: var(--amber)"
+                ></div>
+              </div>
+              <span class="ad-count" id="adc-1">0</span>
+            </div>
+            <div class="ad-row">
+              <span class="ad-name">throttle</span>
+              <div class="ad-bar-wrap">
+                <div
+                  class="ad-bar"
+                  id="ad-2"
+                  style="width: 0%; background: var(--red)"
+                ></div>
+              </div>
+              <span class="ad-count" id="adc-2">0</span>
+            </div>
+            <div class="ad-row">
+              <span class="ad-name">prioritise</span>
+              <div class="ad-bar-wrap">
+                <div
+                  class="ad-bar"
+                  id="ad-3"
+                  style="width: 0%; background: var(--green)"
+                ></div>
+              </div>
+              <span class="ad-count" id="adc-3">0</span>
+            </div>
+            <div class="ad-row">
+              <span class="ad-name">reset</span>
+              <div class="ad-bar-wrap">
+                <div
+                  class="ad-bar"
+                  id="ad-4"
+                  style="width: 0%; background: var(--accent)"
+                ></div>
+              </div>
+              <span class="ad-count" id="adc-4">0</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="decision-timeline" id="decision-timeline">
+          <div
+            style="
+              text-align: center;
+              color: var(--dim);
+              font-family: &quot;Share Tech Mono&quot;, monospace;
+              font-size: 11px;
+              padding: 24px;
+            "
+          >
+            Waiting for DQN agent...<br />
+            <span style="font-size: 10px; margin-top: 6px; display: block"
+              >Start dqn_agent.py to see decisions</span
+            >
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Floating event log -->
+    <div
+      style="
+        position: fixed;
+        bottom: 32px;
+        right: 16px;
+        width: 300px;
+        max-height: 200px;
+        background: var(--bg1);
+        border: 1px solid var(--border);
+        z-index: 50;
+        display: flex;
+        flex-direction: column;
+        border-radius: 4px;
+      "
+    >
+      <div
+        style="
+          padding: 7px 12px;
+          border-bottom: 1px solid var(--border);
+          font-family: &quot;Orbitron&quot;, monospace;
+          font-size: 10px;
+          letter-spacing: 2px;
+          color: var(--accent);
+        "
+      >
+        ▸ EVENT LOG
+      </div>
+      <div
+        id="event-log"
+        style="overflow-y: auto; max-height: 160px; padding: 6px"
+      ></div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+    <script>
+      // ── Config ──────────────────────────────────────────────────────
+      const RYU_API = "http://127.0.0.1:8080/qos/api/v1";
+      const DQN_API = "http://127.0.0.1:8081";
+      const POLL = 2000;
+      const MAX_PTS = 60;
+      const ACTION_COLORS = [
+        "#4a7a99",
+        "#ffb300",
+        "#ff3b5c",
+        "#00ff9d",
+        "#00d4ff",
+      ];
+      const ACTION_NAMES = [
+        "do_nothing",
+        "reroute",
+        "throttle",
+        "prioritise",
+        "reset",
+      ];
+
+      // ── State ────────────────────────────────────────────────────────
+      let st = {
+        ryuOnline: false,
+        dqnOnline: false,
+        switches: {},
+        topology: { switches: [], links: [] },
+        predictions: {},
+        flows: {},
+        selectedDpid: null,
+        totalSamples: 0,
+        decisions: [],
+        dqnStatus: {},
+        congested: false,
+      };
+
+      // ── Clock ─────────────────────────────────────────────────────────
+      setInterval(() => {
+        document.getElementById("clock").textContent =
+          new Date().toLocaleTimeString("en-GB", { hour12: false });
+      }, 1000);
+
+      // ── Fetch helpers ─────────────────────────────────────────────────
+      async function apiFetch(base, path) {
+        try {
+          const r = await fetch(`${base}/${path}`, {
+            signal: AbortSignal.timeout(2500),
+          });
+          return r.ok ? r.json() : null;
+        } catch {
+          return null;
+        }
+      }
+
+      // ── Chart setup ───────────────────────────────────────────────────
+      const cOpts = {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: 300 },
+        plugins: {
+          legend: {
+            labels: { color: "#4a7a99", font: { size: 10 }, boxWidth: 12 },
+          },
+        },
+        scales: {
+          x: {
+            ticks: { color: "#4a7a99", maxTicksLimit: 6, font: { size: 9 } },
+            grid: { color: "rgba(13,61,90,0.5)" },
+          },
+          y: {
+            ticks: { color: "#4a7a99", font: { size: 9 } },
+            grid: { color: "rgba(13,61,90,0.5)" },
+          },
+        },
+      };
+
+      // Bandwidth chart — real BW + LSTM P(congested) on second Y-axis
+      const bwChart = new Chart(document.getElementById("bw-chart"), {
+        type: "line",
+        data: {
+          labels: [],
+          datasets: [
+            {
+              label: "BW Rx (Mbps)",
+              data: [],
+              borderColor: "#00d4ff",
+              backgroundColor: "rgba(0,212,255,0.08)",
+              fill: true,
+              tension: 0.4,
+              borderWidth: 2,
+              pointRadius: 0,
+              yAxisID: "y",
+            },
+            {
+              label: "BW Tx (Mbps)",
+              data: [],
+              borderColor: "#00ff9d",
+              backgroundColor: "rgba(0,255,157,0.05)",
+              fill: true,
+              tension: 0.4,
+              borderWidth: 2,
+              pointRadius: 0,
+              yAxisID: "y",
+            },
+            {
+              label: "LSTM P(congested) %",
+              data: [],
+              borderColor: "#ff3b5c",
+              backgroundColor: "rgba(255,59,92,0.06)",
+              fill: true,
+              tension: 0.4,
+              borderWidth: 2,
+              borderDash: [5, 3],
+              pointRadius: 0,
+              yAxisID: "y2",
+            },
+          ],
+        },
+        options: {
+          ...cOpts,
+          scales: {
+            x: {
+              ticks: { color: "#4a7a99", maxTicksLimit: 6, font: { size: 9 } },
+              grid: { color: "rgba(13,61,90,0.5)" },
+            },
+            y: {
+              position: "left",
+              ticks: { color: "#4a7a99", font: { size: 9 } },
+              grid: { color: "rgba(13,61,90,0.5)" },
+              title: {
+                display: true,
+                text: "Mbps",
+                color: "#4a7a99",
+                font: { size: 9 },
+              },
+            },
+            y2: {
+              position: "right",
+              min: 0,
+              max: 100,
+              ticks: {
+                color: "#ff3b5c",
+                font: { size: 9 },
+                callback: (v) => v + "%",
+              },
+              grid: { drawOnChartArea: false },
+              title: {
+                display: true,
+                text: "P(cong)",
+                color: "#ff3b5c",
+                font: { size: 9 },
+              },
+            },
+          },
+        },
       });
-    });
-  });
 
-  topoNodes = [...switchNodes, ...hostNodes];
-  topoLinks = [
-    ...lk.map(l => ({ source: l.src_dpid, target: l.dst_dpid, type: 'sw-link' })),
-    ...hostNodes.map(h => ({ source: h.swDpid, target: h.id, type: 'host-link' })),
-  ];
+      // Latency chart
+      const latChart = new Chart(document.getElementById("lat-chart"), {
+        type: "line",
+        data: {
+          labels: [],
+          datasets: [
+            {
+              label: "Latency (ms)",
+              data: [],
+              borderColor: "#ffb300",
+              backgroundColor: "rgba(255,179,0,0.08)",
+              fill: true,
+              tension: 0.4,
+              borderWidth: 2,
+              pointRadius: 0,
+            },
+            {
+              label: "Jitter (ms)",
+              data: [],
+              borderColor: "#a855f7",
+              backgroundColor: "rgba(168,85,247,0.05)",
+              fill: true,
+              tension: 0.4,
+              borderWidth: 2,
+              pointRadius: 0,
+            },
+          ],
+        },
+        options: { ...cOpts },
+      });
 
-  document.getElementById('topo-badge').textContent =
-    `${sw.length} sw · ${hostNodes.length} hosts · ${lk.length} links`;
-}
+      // DQN Reward + Loss chart
+      const rewardChart = new Chart(document.getElementById("reward-chart"), {
+        type: "line",
+        data: {
+          labels: [],
+          datasets: [
+            {
+              label: "Avg Reward",
+              data: [],
+              borderColor: "#00ff9d",
+              backgroundColor: "rgba(0,255,157,0.07)",
+              fill: true,
+              tension: 0.4,
+              borderWidth: 2,
+              pointRadius: 0,
+              yAxisID: "y",
+            },
+            {
+              label: "Train Loss",
+              data: [],
+              borderColor: "#a855f7",
+              backgroundColor: "rgba(168,85,247,0.05)",
+              fill: false,
+              tension: 0.4,
+              borderWidth: 1.5,
+              pointRadius: 0,
+              borderDash: [4, 2],
+              yAxisID: "y2",
+            },
+          ],
+        },
+        options: {
+          ...cOpts,
+          scales: {
+            x: {
+              ticks: { color: "#4a7a99", maxTicksLimit: 6, font: { size: 9 } },
+              grid: { color: "rgba(13,61,90,0.5)" },
+            },
+            y: {
+              position: "left",
+              ticks: { color: "#00ff9d", font: { size: 9 } },
+              grid: { color: "rgba(13,61,90,0.5)" },
+            },
+            y2: {
+              position: "right",
+              ticks: { color: "#a855f7", font: { size: 9 } },
+              grid: { drawOnChartArea: false },
+            },
+          },
+        },
+      });
 
-function renderTopology() {
-  const W = topoCanvas.width, H = topoCanvas.height;
-  topoCtx.clearRect(0, 0, W, H);
-  if (topoNodes.length === 0) return;
-
-  // Draw links
-  topoLinks.forEach(link => {
-    const src = topoNodes.find(n => n.id === link.source);
-    const tgt = topoNodes.find(n => n.id === link.target);
-    if (!src || !tgt) return;
-
-    const isHostLink = link.type === 'host-link';
-    topoCtx.beginPath();
-    topoCtx.moveTo(src.x, src.y);
-    topoCtx.lineTo(tgt.x, tgt.y);
-    topoCtx.strokeStyle = isHostLink ? 'rgba(0,255,157,0.2)' : 'rgba(0,212,255,0.3)';
-    topoCtx.lineWidth   = isHostLink ? 1 : 1.5;
-    if (isHostLink) { topoCtx.setLineDash([4, 3]); } else { topoCtx.setLineDash([]); }
-    topoCtx.stroke();
-    topoCtx.setLineDash([]);
-
-    // Animate packet dot on switch links only
-    if (!isHostLink) {
-      const t = ((Date.now() / 1000) + (src.x * 0.01)) % 1;
-      const px = src.x + (tgt.x - src.x) * t;
-      const py = src.y + (tgt.y - src.y) * t;
-      topoCtx.beginPath();
-      topoCtx.arc(px, py, 2.5, 0, Math.PI*2);
-      topoCtx.fillStyle = '#00ff9d';
-      topoCtx.shadowColor = '#00ff9d';
-      topoCtx.shadowBlur = 6;
-      topoCtx.fill();
-      topoCtx.shadowBlur = 0;
-    }
-  });
-
-  // Draw nodes
-  topoNodes.forEach(node => {
-    const isSelected = node.id === state.selectedDpid;
-
-    if (node.type === 'host') {
-      // ── HOST: small circle with H label ──
-      const r     = node.r || 8;
-      const fSize = r >= 10 ? 9 : 7;
-      // glow
-      const grad = topoCtx.createRadialGradient(node.x, node.y, 0, node.x, node.y, r * 2.5);
-      grad.addColorStop(0, 'rgba(0,255,157,0.15)');
-      grad.addColorStop(1, 'rgba(0,255,157,0)');
-      topoCtx.beginPath();
-      topoCtx.arc(node.x, node.y, r * 2.5, 0, Math.PI*2);
-      topoCtx.fillStyle = grad; topoCtx.fill();
-      // circle
-      topoCtx.beginPath();
-      topoCtx.arc(node.x, node.y, r, 0, Math.PI*2);
-      topoCtx.fillStyle = 'rgba(0,30,20,0.9)';
-      topoCtx.fill();
-      topoCtx.strokeStyle = '#00ff9d';
-      topoCtx.lineWidth = 1.5;
-      topoCtx.stroke();
-      // H label
-      topoCtx.fillStyle = '#00ff9d';
-      topoCtx.font = `bold ${fSize}px 'Orbitron', monospace`;
-      topoCtx.textAlign = 'center'; topoCtx.textBaseline = 'middle';
-      topoCtx.fillText(node.label, node.x, node.y);
-      // IP below
-      if (node.ip) {
-        topoCtx.fillStyle = 'rgba(0,255,157,0.5)';
-        topoCtx.font = `8px 'Share Tech Mono', monospace`;
-        topoCtx.fillText(node.ip, node.x, node.y + r + 9);
+      function pushChart(ch, label, ...vals) {
+        ch.data.labels.push(label);
+        if (ch.data.labels.length > MAX_PTS) ch.data.labels.shift();
+        vals.forEach((v, i) => {
+          ch.data.datasets[i].data.push(v);
+          if (ch.data.datasets[i].data.length > MAX_PTS)
+            ch.data.datasets[i].data.shift();
+        });
+        ch.update("none");
       }
 
-    } else {
-      // ── SWITCH: hexagon ──
-      const color  = node.active ? '#00d4ff' : '#ff3b5c';
-      const nodeR  = node.r || 18;
-      const r      = isSelected ? nodeR * 1.25 : nodeR;
-      const fSize  = nodeR >= 16 ? 11 : nodeR >= 12 ? 9 : 7;
-      // glow
-      if (node.active) {
-        const grad = topoCtx.createRadialGradient(node.x, node.y, 0, node.x, node.y, r * 2);
-        grad.addColorStop(0, `rgba(0,212,255,0.3)`);
-        grad.addColorStop(1, `rgba(0,212,255,0)`);
-        topoCtx.beginPath();
-        topoCtx.arc(node.x, node.y, r * 2, 0, Math.PI*2);
-        topoCtx.fillStyle = grad; topoCtx.fill();
+      // ── Topology canvas ───────────────────────────────────────────────
+      const topoCanvas = document.getElementById("topology-canvas");
+      const topoCtx = topoCanvas.getContext("2d");
+      let topoNodes = [],
+        topoLinks = [];
+      let topoCache = { swCount: -1, lkCount: -1 };
+      // ── Universal panel expand/collapse ──────────────────────────
+      let expandedPanel = null;
+
+      function expandPanel(panelId) {
+        const panel = document.getElementById(panelId);
+        const btn = panel.querySelector(".fullscreen-btn");
+        const isNowFs = !panel.classList.contains("fullscreen");
+
+        // collapse any currently expanded panel first
+        if (expandedPanel && expandedPanel !== panel) {
+          expandedPanel.classList.remove("fullscreen");
+          const prevBtn = expandedPanel.querySelector(".fullscreen-btn");
+          if (prevBtn) {
+            prevBtn.textContent = "⛶ EXPAND";
+            prevBtn.classList.remove("active");
+          }
+          expandedPanel = null;
+        }
+
+        panel.classList.toggle("fullscreen", isNowFs);
+        btn.textContent = isNowFs ? "✕ COLLAPSE" : "⛶ EXPAND";
+        btn.classList.toggle("active", isNowFs);
+        expandedPanel = isNowFs ? panel : null;
+
+        // resize topology canvas if it's involved
+        setTimeout(() => {
+          resizeCanvas();
+          topoCache = { swCount: -1, lkCount: -1 }; // force layout recalc for new size
+          if (state.topology?.switches?.length) buildTopoNodes(state.topology);
+          [bwChart, latChart].forEach((c) => c.resize());
+        }, 60);
       }
-      // hexagon
-      topoCtx.beginPath();
-      for (let i = 0; i < 6; i++) {
-        const a = (Math.PI / 3) * i - Math.PI / 6;
-        const px = node.x + r * Math.cos(a);
-        const py = node.y + r * Math.sin(a);
-        i === 0 ? topoCtx.moveTo(px, py) : topoCtx.lineTo(px, py);
+
+      // ESC collapses any expanded panel
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && expandedPanel) {
+          const id = expandedPanel.id;
+          expandPanel(id);
+        }
+      });
+
+      function resizeCanvas() {
+        const r = topoCanvas.parentElement.getBoundingClientRect();
+        topoCanvas.width = r.width;
+        topoCanvas.height = r.height;
       }
-      topoCtx.closePath();
-      topoCtx.fillStyle = isSelected ? 'rgba(0,212,255,0.2)' : 'rgba(4,24,37,0.9)';
-      topoCtx.fill();
-      topoCtx.strokeStyle = color;
-      topoCtx.lineWidth = isSelected ? 2.5 : 1.5;
-      topoCtx.stroke();
-      // label
-      topoCtx.fillStyle = color;
-      topoCtx.font = `bold ${fSize}px 'Orbitron', monospace`;
-      topoCtx.textAlign = 'center'; topoCtx.textBaseline = 'middle';
-      topoCtx.fillText(node.label, node.x, node.y);
-      // status dot
-      topoCtx.beginPath();
-      topoCtx.arc(node.x + r * 0.6, node.y - r * 0.6, 3, 0, Math.PI*2);
-      topoCtx.fillStyle = node.active ? '#00ff9d' : '#ff3b5c';
-      topoCtx.fill();
-    }
-  });
-}
+      window.addEventListener("resize", () => {
+        resizeCanvas();
+        topoCache = { swCount: -1, lkCount: -1 };
+      });
+      resizeCanvas();
 
-function animateTopology() {
-  renderTopology();
-  requestAnimationFrame(animateTopology);
-}
-animateTopology();
+      function buildTopoNodes(topo) {
+        const sw = topo.switches || [],
+          lk = topo.links || [];
+        if (
+          sw.length === topoCache.swCount &&
+          lk.length === topoCache.lkCount &&
+          topoNodes.length > 0
+        )
+          return;
+        topoCache = { swCount: sw.length, lkCount: lk.length };
+        if (!sw.length) {
+          topoNodes = [];
+          topoLinks = [];
+          return;
+        }
 
-// Click to select node
-topoCanvas.addEventListener('click', e => {
-  const rect = topoCanvas.getBoundingClientRect();
-  const mx = e.clientX - rect.left;
-  const my = e.clientY - rect.top;
-  topoNodes.forEach(n => {
-    if (Math.hypot(mx - n.x, my - n.y) < 28) {
-      state.selectedDpid = n.id;
-      updateGauges();
-    }
-  });
-});
+        const W = topoCanvas.width,
+          H = topoCanvas.height;
+        const adj = {};
+        sw.forEach((s) => {
+          adj[s.dpid] = new Set();
+        });
+        lk.forEach((l) => {
+          if (adj[l.src_dpid]) adj[l.src_dpid].add(l.dst_dpid);
+          if (adj[l.dst_dpid]) adj[l.dst_dpid].add(l.src_dpid);
+        });
 
-// ════════════════════════════════════════════════════════════════
-//  GAUGE UPDATE
-// ════════════════════════════════════════════════════════════════
-function updateGauges() {
-  const m = state.switches[state.selectedDpid];
-  if (!m) return;
-  const MAX = { bw: 100, lat: 200, jitter: 50, loss: 10 };
-  setGauge('bw',     m.bw_rx_mbps, MAX.bw,     `${m.bw_rx_mbps?.toFixed(2)} Mbps`, '#00d4ff');
-  setGauge('tx',     m.bw_tx_mbps, MAX.bw,     `${m.bw_tx_mbps?.toFixed(2)} Mbps`, '#00ff9d');
-  setGauge('lat',    m.latency_ms, MAX.lat,    `${m.latency_ms?.toFixed(1)} ms`,   '#ffb300');
-  setGauge('jitter', m.jitter_ms,  MAX.jitter, `${m.jitter_ms?.toFixed(1)} ms`,    '#a855f7');
-  setGauge('loss',   m.loss_pct,   MAX.loss,   `${m.loss_pct?.toFixed(2)}%`,       '#ff3b5c');
+        const degrees = sw.map((s) => ({
+          dpid: s.dpid,
+          deg: (adj[s.dpid] || new Set()).size,
+        }));
+        const root = degrees.reduce((a, b) => (a.deg >= b.deg ? a : b)).dpid;
+        const children = {};
+        sw.forEach((s) => {
+          children[s.dpid] = [];
+        });
+        const visited = new Set([root]);
+        const bfsQ = [root];
+        while (bfsQ.length) {
+          const cur = bfsQ.shift();
+          [...(adj[cur] || [])].forEach((nb) => {
+            if (!visited.has(nb)) {
+              visited.add(nb);
+              children[cur].push(nb);
+              bfsQ.push(nb);
+            }
+          });
+        }
+        const leafW = {};
+        const postOrder = (() => {
+          const r = [],
+            s = [root];
+          while (s.length) {
+            const n = s.pop();
+            r.push(n);
+            (children[n] || []).forEach((c) => s.push(c));
+          }
+          return r.reverse();
+        })();
+        postOrder.forEach((node) => {
+          const ch = children[node] || [];
+          leafW[node] =
+            ch.length === 0 ? 1 : ch.reduce((s, c) => s + leafW[c], 0);
+        });
+        const depth = { [root]: 0 };
+        let maxD = 0;
+        const bfsD = [root];
+        while (bfsD.length) {
+          const n = bfsD.shift();
+          (children[n] || []).forEach((c) => {
+            depth[c] = (depth[n] || 0) + 1;
+            maxD = Math.max(maxD, depth[c]);
+            bfsD.push(c);
+          });
+        }
+        const nodeR =
+          sw.length <= 10
+            ? 20
+            : sw.length <= 30
+              ? 16
+              : sw.length <= 60
+                ? 13
+                : sw.length <= 127
+                  ? 10
+                  : 8;
+        const padX = nodeR * 2,
+          padY = nodeR * 3,
+          usableW = W - padX * 2,
+          usableH = H - padY * 2;
+        const xScale = usableW / leafW[root],
+          tierH = maxD > 0 ? usableH / maxD : usableH;
+        const xOff = { [root]: 0 };
+        const bfsX = [root];
+        while (bfsX.length) {
+          const n = bfsX.shift();
+          let c = xOff[n];
+          (children[n] || []).forEach((ch) => {
+            xOff[ch] = c;
+            c += leafW[ch];
+            bfsX.push(ch);
+          });
+        }
+        const swPos = {};
+        sw.forEach((s) => {
+          swPos[s.dpid] = {
+            x: padX + (xOff[s.dpid] + leafW[s.dpid] / 2) * xScale,
+            y: padY + (depth[s.dpid] || 0) * tierH,
+          };
+        });
+        const dpidLabel = {};
+        sw.forEach((s, i) => {
+          dpidLabel[s.dpid] = `s${i + 1}`;
+        });
+        topoNodes = sw.map((s) => ({
+          id: s.dpid,
+          x: swPos[s.dpid].x,
+          y: swPos[s.dpid].y,
+          label: dpidLabel[s.dpid],
+          type: "switch",
+          active: s.status === "active",
+          r: nodeR,
+        }));
+        topoLinks = lk.map((l) => ({ source: l.src_dpid, target: l.dst_dpid }));
+        document.getElementById("topo-badge").textContent =
+          `${sw.length} sw · ${lk.length} links`;
+      }
 
-  const reward = m.reward ?? 0;
-  const rewardEl = document.getElementById('reward-display');
-  rewardEl.textContent = reward.toFixed(4);
-  rewardEl.style.color = reward > 0 ? '#00ff9d' : reward > -0.3 ? '#ffb300' : '#ff3b5c';
-}
+      function renderTopology() {
+        const W = topoCanvas.width,
+          H = topoCanvas.height;
+        topoCtx.clearRect(0, 0, W, H);
+        if (!topoNodes.length) return;
 
-function setGauge(id, val, max, label, color) {
-  const row  = document.getElementById(`gauge-${id}`);
-  const fill = row.querySelector('.gauge-fill');
-  const valEl= row.querySelector('.gauge-val');
-  const pct  = Math.min((val / max) * 100, 100);
-  fill.style.width      = `${pct}%`;
-  fill.style.background = color;
-  valEl.textContent     = label;
-  valEl.style.color     = pct > 80 ? '#ff3b5c' : pct > 50 ? '#ffb300' : color;
-}
+        // Links
+        topoLinks.forEach((lk) => {
+          const src = topoNodes.find((n) => n.id === lk.source);
+          const tgt = topoNodes.find((n) => n.id === lk.target);
+          if (!src || !tgt) return;
+          topoCtx.beginPath();
+          topoCtx.moveTo(src.x, src.y);
+          topoCtx.lineTo(tgt.x, tgt.y);
+          topoCtx.strokeStyle = "rgba(0,212,255,0.3)";
+          topoCtx.lineWidth = 1.5;
+          topoCtx.setLineDash([]);
+          topoCtx.stroke();
+          // Animated packet dot
+          const t = (Date.now() / 1000 + src.x * 0.01) % 1;
+          const px = src.x + (tgt.x - src.x) * t,
+            py = src.y + (tgt.y - src.y) * t;
+          topoCtx.beginPath();
+          topoCtx.arc(px, py, 2, 0, Math.PI * 2);
+          topoCtx.fillStyle = "#00ff9d";
+          topoCtx.shadowColor = "#00ff9d";
+          topoCtx.shadowBlur = 5;
+          topoCtx.fill();
+          topoCtx.shadowBlur = 0;
+        });
 
-// ════════════════════════════════════════════════════════════════
-//  SWITCH LIST
-// ════════════════════════════════════════════════════════════════
-function renderSwitchList() {
-  const el = document.getElementById('switch-list');
-  const keys = Object.keys(state.switches);
-  if (keys.length === 0) {
-    el.innerHTML = `<div class="topo-loading" style="position:relative;height:60px">
-      <div class="spinner"></div><span>Waiting...</span></div>`;
-    return;
-  }
-  el.innerHTML = keys.map(dpid => {
-    const m = state.switches[dpid];
-    const sel = dpid === state.selectedDpid ? 'selected' : '';
-    return `<div class="switch-card ${sel}" onclick="selectSwitch('${dpid}')">
-      <div class="sw-name">${dpid}</div>
+        // Nodes — colour by LSTM congestion zone
+        topoNodes.forEach((node) => {
+          const pred = st.predictions[node.id];
+          const pCong = pred ? Object.values(pred)[0]?.P_congested || 0 : 0;
+          const zone =
+            pCong > 0.7
+              ? "critical"
+              : pCong > 0.4
+                ? "congested"
+                : pCong > 0.2
+                  ? "warning"
+                  : "normal";
+          const zoneColor = {
+            normal: "#00d4ff",
+            warning: "#ffb300",
+            congested: "#ff3b5c",
+            critical: "#ff3b5c",
+          }[zone];
+          const isSel = node.id === st.selectedDpid;
+          const r = isSel ? node.r * 1.25 : node.r;
+
+          // Glow
+          const grad = topoCtx.createRadialGradient(
+            node.x,
+            node.y,
+            0,
+            node.x,
+            node.y,
+            r * 2,
+          );
+          grad.addColorStop(
+            0,
+            `rgba(${zone === "normal" ? "0,212,255" : zone === "warning" ? "255,179,0" : "255,59,92"},0.25)`,
+          );
+          grad.addColorStop(1, "rgba(0,0,0,0)");
+          topoCtx.beginPath();
+          topoCtx.arc(node.x, node.y, r * 2, 0, Math.PI * 2);
+          topoCtx.fillStyle = grad;
+          topoCtx.fill();
+
+          // Hexagon
+          topoCtx.beginPath();
+          for (let i = 0; i < 6; i++) {
+            const a = (Math.PI / 3) * i - Math.PI / 6;
+            const px = node.x + r * Math.cos(a);
+            const py = node.y + r * Math.sin(a);
+            i === 0 ? topoCtx.moveTo(px, py) : topoCtx.lineTo(px, py);
+          }
+          topoCtx.closePath();
+          topoCtx.fillStyle = isSel
+            ? `rgba(0,212,255,0.15)`
+            : "rgba(4,24,37,0.92)";
+          topoCtx.fill();
+          topoCtx.strokeStyle = zoneColor;
+          topoCtx.lineWidth = isSel ? 2.5 : 1.5;
+          topoCtx.stroke();
+
+          // Label
+          const fSize = node.r >= 16 ? 11 : node.r >= 12 ? 9 : 7;
+          topoCtx.fillStyle = zoneColor;
+          topoCtx.font = `bold ${fSize}px 'Orbitron',monospace`;
+          topoCtx.textAlign = "center";
+          topoCtx.textBaseline = "middle";
+          topoCtx.fillText(node.label, node.x, node.y);
+
+          // P(congested) % below label if warming
+          if (pCong > 0.15) {
+            topoCtx.fillStyle = "rgba(255,59,92,0.7)";
+            topoCtx.font = `8px 'Share Tech Mono',monospace`;
+            topoCtx.fillText(
+              Math.round(pCong * 100) + "%",
+              node.x,
+              node.y + node.r + 10,
+            );
+          }
+        });
+      }
+      (function loop() {
+        renderTopology();
+        requestAnimationFrame(loop);
+      })();
+
+      topoCanvas.addEventListener("click", (e) => {
+        const rect = topoCanvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left,
+          my = e.clientY - rect.top;
+        topoNodes.forEach((n) => {
+          if (Math.hypot(mx - n.x, my - n.y) < 28) {
+            st.selectedDpid = n.id;
+            updateGauges();
+            renderSwitchList();
+          }
+        });
+      });
+
+      // ── Gauge update ──────────────────────────────────────────────────
+      function setGauge(id, val, max, label, color) {
+        const row = document.getElementById(`gauge-${id}`);
+        const fill = row.querySelector(".gauge-fill"),
+          valEl = row.querySelector(".gauge-val");
+        const pct = Math.min((val / max) * 100, 100);
+        fill.style.width = pct + "%";
+        fill.style.background = color;
+        valEl.textContent = label;
+        valEl.style.color = pct > 80 ? "#ff3b5c" : pct > 50 ? "#ffb300" : color;
+      }
+
+      function updateGauges() {
+        const m = st.switches[st.selectedDpid];
+        if (!m) return;
+        setGauge(
+          "bw",
+          m.bw_rx_mbps || 0,
+          100,
+          `${(m.bw_rx_mbps || 0).toFixed(2)} Mbps`,
+          "#00d4ff",
+        );
+        setGauge(
+          "tx",
+          m.bw_tx_mbps || 0,
+          100,
+          `${(m.bw_tx_mbps || 0).toFixed(2)} Mbps`,
+          "#00ff9d",
+        );
+        setGauge(
+          "lat",
+          m.latency_ms || 0,
+          200,
+          `${(m.latency_ms || 0).toFixed(1)} ms`,
+          "#ffb300",
+        );
+        setGauge(
+          "jitter",
+          m.jitter_ms || 0,
+          50,
+          `${(m.jitter_ms || 0).toFixed(1)} ms`,
+          "#a855f7",
+        );
+        setGauge(
+          "loss",
+          m.loss_pct || 0,
+          10,
+          `${(m.loss_pct || 0).toFixed(3)}%`,
+          "#ff3b5c",
+        );
+
+        const r = m.reward || 0;
+        const rel = document.getElementById("reward-display");
+        rel.textContent = r.toFixed(4);
+        rel.style.color = r > 0 ? "#00ff9d" : r > -0.3 ? "#ffb300" : "#ff3b5c";
+
+        // LSTM gauges for selected switch
+        const pred = st.predictions[st.selectedDpid];
+        if (pred) {
+          const ports = Object.values(pred);
+          if (ports.length) {
+            const worst = ports.reduce((a, b) =>
+              b.P_congested > a.P_congested ? b : a,
+            );
+            const pn = worst.P_normal || 0,
+              pw = worst.P_warning || 0,
+              pc = worst.P_congested || 0;
+            document.getElementById("p-norm-fill").style.width = pn * 100 + "%";
+            document.getElementById("p-warn-fill").style.width = pw * 100 + "%";
+            document.getElementById("p-cong-fill").style.width = pc * 100 + "%";
+            document.getElementById("p-norm-val").textContent =
+              (pn * 100).toFixed(1) + "%";
+            document.getElementById("p-warn-val").textContent =
+              (pw * 100).toFixed(1) + "%";
+            document.getElementById("p-cong-val").textContent =
+              (pc * 100).toFixed(1) + "%";
+          }
+        }
+      }
+
+      // ── Switch list ───────────────────────────────────────────────────
+      function renderSwitchList() {
+        const el = document.getElementById("switch-list");
+        const keys = Object.keys(st.switches);
+        if (!keys.length) {
+          el.innerHTML =
+            '<div class="topo-loading" style="position:relative;height:60px"><div class="spinner"></div><span>Waiting...</span></div>';
+          return;
+        }
+        el.innerHTML = keys
+          .map((dpid) => {
+            const m = st.switches[dpid];
+            const pred = st.predictions[dpid];
+            let zone = "normal",
+              pCong = 0;
+            if (pred) {
+              const ports = Object.values(pred);
+              if (ports.length) {
+                const worst = ports.reduce((a, b) =>
+                  b.P_congested > a.P_congested ? b : a,
+                );
+                pCong = worst.P_congested || 0;
+                zone = worst.pred_zone || "normal";
+              }
+            }
+            const sel = dpid === st.selectedDpid ? "selected" : "";
+            const zClass = zone === "critical" ? "congested" : zone;
+            const shortId = dpid.slice(-8);
+            return `<div class="switch-card ${sel} ${zClass}" onclick="selectSw('${dpid}')">
+      <div class="sw-name">${shortId}</div>
       <div class="sw-stats">
-        <span class="sw-stat">BW↓ <span class="sw-val">${(m.bw_rx_mbps||0).toFixed(2)}</span> Mbps</span>
-        <span class="sw-stat">BW↑ <span class="sw-val">${(m.bw_tx_mbps||0).toFixed(2)}</span> Mbps</span>
-        <span class="sw-stat">Lat <span class="sw-val">${(m.latency_ms||0).toFixed(1)}</span> ms</span>
-        <span class="sw-stat">Loss <span class="sw-val">${(m.loss_pct||0).toFixed(2)}</span>%</span>
+        <span class="sw-stat">BW↓ <span class="sw-val">${(m.bw_rx_mbps || 0).toFixed(2)}</span>M</span>
+        <span class="sw-stat">BW↑ <span class="sw-val">${(m.bw_tx_mbps || 0).toFixed(2)}</span>M</span>
+        <span class="sw-stat">Lat <span class="sw-val">${(m.latency_ms || 0).toFixed(1)}</span>ms</span>
+        <span class="sw-stat">Loss <span class="sw-val">${(m.loss_pct || 0).toFixed(2)}</span>%</span>
+      </div>
+      <span class="sw-zone zone-${zClass}">${zone.toUpperCase()} ${pCong > 0.1 ? "· P=" + Math.round(pCong * 100) + "%" : ""}</span>
+    </div>`;
+          })
+          .join("");
+      }
+      function selectSw(dpid) {
+        st.selectedDpid = dpid;
+        updateGauges();
+        renderSwitchList();
+      }
+
+      // ── Decision timeline ─────────────────────────────────────────────
+      function renderDecisions(decisions) {
+        const el = document.getElementById("decision-timeline");
+        if (!decisions || !decisions.length) {
+          el.innerHTML =
+            "<div style=\"text-align:center;color:var(--dim);font-family:'Share Tech Mono',monospace;font-size:11px;padding:20px;\">No decisions yet...</div>";
+          return;
+        }
+        el.innerHTML = decisions
+          .slice(0, 50)
+          .map((d, idx) => {
+            const aIdx = d.action || 0;
+            const aColor = ACTION_COLORS[aIdx];
+            const rewClass = d.reward > 0 ? "pos" : "neg";
+            const congFlag = d.is_congested
+              ? '<span style="color:var(--red);font-size:9px;margin-left:4px;">▲CONG</span>'
+              : "";
+            const shortDpid = d.dpid ? d.dpid.slice(-6) : "??";
+
+            // Q-value bars
+            const qEntries = Object.entries(d.q_values || {});
+            const qMax = qEntries.length
+              ? Math.max(...qEntries.map((e) => Math.abs(e[1])))
+              : 1;
+            const qBars = qEntries
+              .map(([name, val], i) => {
+                const pct = Math.min(
+                  (Math.abs(val) / Math.max(qMax, 0.01)) * 100,
+                  100,
+                );
+                const col = ACTION_COLORS[i];
+                const isBest = i === aIdx;
+                return `<div class="qval-row">
+        <span class="qval-name" style="${isBest ? "color:" + col + ";font-weight:700" : ""}">${name}</span>
+        <div class="qval-bar-wrap"><div class="qval-bar" style="width:${pct}%;background:${col};opacity:${isBest ? 1 : 0.5}"></div></div>
+        <span class="qval-num" style="color:${val >= 0 ? "#00ff9d" : "#ff3b5c"}">${val >= 0 ? "+" : ""}${val.toFixed(3)}</span>
+      </div>`;
+              })
+              .join("");
+
+            // State snapshot
+            const s = d.state || {};
+            const stateHtml = `<div class="state-grid">
+      <div class="state-item">P(cong) <span>${((s.P_congested || 0) * 100).toFixed(1)}%</span></div>
+      <div class="state-item">util <span>${(s.util_max_pct || 0).toFixed(1)}%</span></div>
+      <div class="state-item">latency <span>${((s.latency_norm || 0) * 200).toFixed(1)}ms</span></div>
+      <div class="state-item">cong ports <span>${((s.cong_ratio || 0) * 100).toFixed(0)}%</span></div>
+    </div>`;
+
+            return `<div class="decision-card action-${aIdx}" id="dc-${idx}" onclick="toggleDC(${idx})">
+      <div class="dc-header">
+        <div class="dc-left">
+          <span class="dc-time">${d.ts || ""}</span>
+          <span class="dc-switch">${shortDpid}${congFlag}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span class="dc-action a${aIdx}">${ACTION_NAMES[aIdx] || d.action_name}</span>
+          <span class="dc-reward ${rewClass}">${d.reward >= 0 ? "+" : ""}${(d.reward || 0).toFixed(3)}</span>
+        </div>
+      </div>
+      <div class="dc-body">
+        <div style="font-size:10px;color:var(--dim);margin-bottom:6px;letter-spacing:1px;">Q-VALUES  ·  ε=${d.epsilon}  ·  step ${d.step}</div>
+        ${qBars}
+        <div style="font-size:10px;color:var(--dim);margin:8px 0 4px;letter-spacing:1px;">NETWORK STATE</div>
+        ${stateHtml}
       </div>
     </div>`;
-  }).join('');
-}
+          })
+          .join("");
+      }
 
-function selectSwitch(dpid) {
-  state.selectedDpid = dpid;
-  renderSwitchList();
-  updateGauges();
-}
+      function toggleDC(idx) {
+        const el = document.getElementById("dc-" + idx);
+        if (el) {
+          el.classList.toggle("expanded");
+        }
+      }
 
-// ════════════════════════════════════════════════════════════════
-//  FLOW TABLE
-// ════════════════════════════════════════════════════════════════
-function renderFlowTable(flows) {
-  const tbody = document.getElementById('flow-tbody');
-  const rows = [];
-  let total = 0;
-  for (const [dpid, flowMap] of Object.entries(flows)) {
-    for (const [key, f] of Object.entries(flowMap)) {
-      total++;
-      rows.push(`<tr>
-        <td style="color:var(--accent)">${dpid.slice(-8)}</td>
-        <td style="color:var(--text)">${key}</td>
-        <td class="td-good">${f.packet_count?.toLocaleString() ?? '—'}</td>
-        <td>${fmt_bytes(f.byte_count)}</td>
-        <td style="color:var(--dim)">${f.duration_sec}s</td>
-      </tr>`);
-    }
-  }
-  tbody.innerHTML = rows.length ? rows.join('') :
-    `<tr><td colspan="5" style="text-align:center;color:var(--dim);padding:20px">No flows yet</td></tr>`;
-  document.getElementById('flow-count-badge').textContent = `${total} entries`;
-  document.getElementById('kpi-flows').textContent = total;
-}
+      // ── Action distribution bars ──────────────────────────────────────
+      function updateActionDist(counts) {
+        const vals = Object.values(counts);
+        const total = vals.reduce((a, b) => a + b, 0) || 1;
+        ACTION_NAMES.forEach((name, i) => {
+          const count = counts[name] || 0;
+          const pct = (count / total) * 100;
+          document.getElementById(`ad-${i}`).style.width = pct + "%";
+          document.getElementById(`adc-${i}`).textContent = count;
+        });
+      }
 
-function fmt_bytes(b) {
-  if (!b) return '0 B';
-  if (b < 1024)   return `${b} B`;
-  if (b < 1048576) return `${(b/1024).toFixed(1)} KB`;
-  return `${(b/1048576).toFixed(2)} MB`;
-}
-
-// ════════════════════════════════════════════════════════════════
-//  EVENT LOG
-// ════════════════════════════════════════════════════════════════
-function renderEventLog(events) {
-  const el = document.getElementById('event-log');
-  el.innerHTML = events.slice(0, 20).map(ev => {
-    const t = ev.ts?.split('T')[1]?.split('.')[0] ?? '';
-    return `<div class="event-item ${ev.level}">
-      <span class="event-time">${t}</span>
-      <span class="event-cat">${ev.category?.toUpperCase()}</span>
-      <span class="event-msg">${ev.message}</span>
+      // ── Event log ─────────────────────────────────────────────────────
+      function renderEvents(events) {
+        document.getElementById("event-log").innerHTML = events
+          .slice(0, 15)
+          .map((ev) => {
+            const t = ev.ts?.split("T")[1]?.split(".")[0] || "";
+            const lvl = ev.level || "info";
+            const colors = {
+              info: "#00d4ff",
+              success: "#00ff9d",
+              warning: "#ffb300",
+              error: "#ff3b5c",
+            };
+            return `<div style="display:flex;gap:8px;padding:5px 6px;margin-bottom:3px;border-left:2px solid ${colors[lvl] || "#4a7a99"};background:rgba(255,255,255,0.02);font-family:'Share Tech Mono',monospace;font-size:10px;">
+      <span style="color:#4a7a99;flex-shrink:0;width:60px">${t}</span>
+      <span style="color:${colors[lvl]};flex-shrink:0;width:60px">${(ev.category || "").toUpperCase()}</span>
+      <span style="color:#c8e8f5">${ev.message}</span>
     </div>`;
-  }).join('');
-}
+          })
+          .join("");
+      }
 
-// ════════════════════════════════════════════════════════════════
-//  MAIN POLL LOOP
-// ════════════════════════════════════════════════════════════════
-async function poll() {
-  // Health check
-  const health = await apiFetch('health');
-  const online = health?.status === 'ok';
+      // ── Main poll ─────────────────────────────────────────────────────
+      async function pollRyu() {
+        const health = await apiFetch(RYU_API, "health");
+        const online = health?.status === "ok";
+        if (online !== st.ryuOnline) {
+          st.ryuOnline = online;
+          const el = document.getElementById("controller-status");
+          el.className = `status-badge ${online ? "online" : "offline"}`;
+          el.innerHTML = `<div class="status-dot"></div><span>CONTROLLER ${online ? "ONLINE" : "OFFLINE"}</span>`;
+          document.getElementById("ds-status").textContent = online
+            ? "RECORDING"
+            : "WAITING";
+          document.getElementById("ds-status").style.color = online
+            ? "#00ff9d"
+            : "#ffb300";
+        }
+        if (!online) return;
 
-  const statusEl = document.getElementById('controller-status');
-  if (online !== state.online) {
-    state.online = online;
-    statusEl.className = `status-badge ${online ? 'online' : 'offline'}`;
-    statusEl.innerHTML = `<div class="status-dot"></div>
-      <span>CONTROLLER ${online ? 'ONLINE' : 'OFFLINE'}</span>`;
-    document.getElementById('ds-status').textContent = online ? 'RECORDING' : 'WAITING';
-    document.getElementById('ds-status').style.color = online ? 'var(--green)' : 'var(--amber)';
-  }
+        // Metrics
+        const md = await apiFetch(RYU_API, "metrics/latest");
+        if (md?.metrics) {
+          const keys = Object.keys(md.metrics);
+          document.getElementById("kpi-switches").textContent = keys.length;
+          document.getElementById("topo-overlay").style.display = "none";
+          let tBw = 0,
+            tLat = 0,
+            tLoss = 0,
+            n = 0;
+          for (const [dpid, m] of Object.entries(md.metrics)) {
+            st.switches[dpid] = m;
+            tBw += (m.bw_rx_mbps || 0) + (m.bw_tx_mbps || 0);
+            tLat += m.latency_ms || 0;
+            tLoss += m.loss_pct || 0;
+            n++;
+          }
+          document.getElementById("kpi-bw").textContent = tBw.toFixed(2);
+          document.getElementById("kpi-lat").textContent = n
+            ? (tLat / n).toFixed(1)
+            : "—";
+          document.getElementById("kpi-loss").textContent = n
+            ? (tLoss / n).toFixed(3)
+            : "—";
+          if (!st.selectedDpid && keys.length) st.selectedDpid = keys[0];
+          renderSwitchList();
+          updateGauges();
+          st.totalSamples++;
+          document.getElementById("ds-samples").textContent = st.totalSamples;
+          const first = Object.values(md.metrics)[0];
+          const ts =
+            first.ts_iso?.split("T")[1]?.split(".")[0] ||
+            new Date().toLocaleTimeString("en-GB", { hour12: false });
+          pushChart(latChart, ts, tLat / Math.max(n, 1), first.jitter_ms || 0);
+        }
 
-  if (!online) return;
+        // Predictions — used for LSTM overlay on bw chart + topology coloring
+        const pd = await apiFetch(RYU_API, "prediction");
+        if (pd?.ready && pd.predictions) {
+          st.predictions = pd.predictions;
+          // Compute max P(congested) across all switches for the chart overlay
+          let maxPcong = 0;
+          let anyCongested = false;
+          const congSwitches = [];
+          for (const [dpid, ports] of Object.entries(pd.predictions)) {
+            const vals = Object.values(ports);
+            if (!vals.length) continue;
+            const worst = vals.reduce((a, b) =>
+              b.P_congested > a.P_congested ? b : a,
+            );
+            maxPcong = Math.max(maxPcong, worst.P_congested || 0);
+            if ((worst.P_congested || 0) > 0.6) {
+              anyCongested = true;
+              congSwitches.push(dpid.slice(-6));
+            }
+          }
 
-  // Metrics
-  const metricsData = await apiFetch('metrics/latest');
-  if (metricsData?.metrics) {
-    const keys = Object.keys(metricsData.metrics);
-    document.getElementById('kpi-switches').textContent = keys.length;
-    document.getElementById('topo-overlay').style.display = 'none';
+          // BW chart — push real BW + LSTM prediction line
+          if (md?.metrics) {
+            const m = Object.values(md.metrics);
+            const bwRx = m.reduce((s, x) => s + (x.bw_rx_mbps || 0), 0);
+            const bwTx = m.reduce((s, x) => s + (x.bw_tx_mbps || 0), 0);
+            const ts =
+              Object.values(md.metrics)[0]
+                ?.ts_iso?.split("T")[1]
+                ?.split(".")[0] || "";
+            pushChart(bwChart, ts, bwRx, bwTx, maxPcong * 100);
+          }
 
-    let totalBw = 0, totalLat = 0, totalLoss = 0, n = 0;
-    for (const [dpid, m] of Object.entries(metricsData.metrics)) {
-      state.switches[dpid] = m;
-      totalBw  += (m.bw_rx_mbps || 0) + (m.bw_tx_mbps || 0);
-      totalLat += (m.latency_ms || 0);
-      totalLoss += (m.loss_pct || 0);
-      n++;
-    }
+          // Congestion banner
+          const banner = document.getElementById("cong-banner");
+          if (anyCongested) {
+            banner.classList.add("visible");
+            document.getElementById("cong-detail").textContent =
+              `Switches: ${congSwitches.join(", ")}`;
+          } else {
+            banner.classList.remove("visible");
+          }
+          st.congested = anyCongested;
+          updateGauges();
+        } else if (md?.metrics) {
+          // No LSTM yet — still push BW chart without prediction line
+          const m = Object.values(md.metrics);
+          const bwRx = m.reduce((s, x) => s + (x.bw_rx_mbps || 0), 0);
+          const bwTx = m.reduce((s, x) => s + (x.bw_tx_mbps || 0), 0);
+          const ts =
+            Object.values(md.metrics)[0]
+              ?.ts_iso?.split("T")[1]
+              ?.split(".")[0] || "";
+          pushChart(bwChart, ts, bwRx, bwTx, null);
+        }
 
-    document.getElementById('kpi-bw').textContent   = totalBw.toFixed(2);
-    document.getElementById('kpi-lat').textContent  = n ? (totalLat/n).toFixed(1) : '—';
-    document.getElementById('kpi-loss').textContent = n ? (totalLoss/n).toFixed(3) : '—';
+        // Topology
+        const td = await apiFetch(RYU_API, "topology");
+        if (td) {
+          st.topology = td;
+          buildTopoNodes(td);
+        }
 
-    // Auto-select first switch
-    if (!state.selectedDpid && keys.length > 0) {
-      state.selectedDpid = keys[0];
-    }
+        // Flows
+        const fd = await apiFetch(RYU_API, "flows");
+        if (fd?.flows) {
+          let total = 0;
+          const tbody = document.getElementById("flow-tbody");
+          const rows = [];
+          for (const [dpid, flowMap] of Object.entries(fd.flows)) {
+            for (const [key, f] of Object.entries(flowMap)) {
+              total++;
+              rows.push(
+                `<tr><td style="color:var(--accent)">${dpid.slice(-8)}</td><td>${key}</td><td class="td-good">${(f.packet_count || 0).toLocaleString()}</td><td>${fmtBytes(f.byte_count)}</td><td style="color:var(--dim)">${f.duration_sec}s</td></tr>`,
+              );
+            }
+          }
+          tbody.innerHTML = rows.length
+            ? rows.join("")
+            : `<tr><td colspan="5" style="text-align:center;color:var(--dim);padding:16px">No flows</td></tr>`;
+        }
 
-    // Chart data — aggregate all switches
-    if (n > 0) {
-      const first = Object.values(metricsData.metrics)[0];
-      pushChartData(
-        first.ts_iso || new Date().toISOString(),
-        totalBw / 2,  // avg rx
-        totalBw / 2,  // avg tx
-        totalLat / n,
-        first.jitter_ms || 0
-      );
-    }
+        // Events
+        const ev = await apiFetch(RYU_API, "events");
+        if (ev?.events) renderEvents(ev.events);
 
-    state.totalSamples++;
-    document.getElementById('ds-samples').textContent = state.totalSamples;
-    renderSwitchList();
-    updateGauges();
-  }
+        document.getElementById("last-update").textContent =
+          `LAST UPDATE: ${new Date().toLocaleTimeString("en-GB", { hour12: false })}`;
+      }
 
-  // Topology + Hosts
-  const topoData = await apiFetch('topology');
-  const hostData = await apiFetch('hosts');
-  if (topoData) {
-    state.topology = topoData;
-    if (hostData?.hosts) state.topology.hosts = hostData.hosts;
-    else state.topology.hosts = state.topology.hosts || [];
-    buildTopoNodes(state.topology);
-  }
+      async function pollDQN() {
+        const health = await apiFetch(DQN_API, "health");
+        const online = !!health?.ok;
+        if (online !== st.dqnOnline) {
+          st.dqnOnline = online;
+          const el = document.getElementById("dqn-status-badge");
+          el.className = `status-badge ${online ? "online" : "offline"}`;
+          el.innerHTML = `<div class="status-dot"></div><span>DQN ${online ? "ACTIVE" : "OFFLINE"}</span>`;
+        }
+        if (!online) return;
 
-  // Flows
-  const flowData = await apiFetch('flows');
-  if (flowData?.flows) {
-    renderFlowTable(flowData.flows);
-  }
+        // Decisions
+        const dd = await apiFetch(DQN_API, "decisions");
+        if (dd?.decisions) {
+          st.decisions = dd.decisions;
+          renderDecisions(dd.decisions);
+        }
 
-  // Events
-  const evData = await apiFetch('events');
-  if (evData?.events) {
-    renderEventLog(evData.events);
-  }
+        // Status
+        const ds = await apiFetch(DQN_API, "status");
+        if (ds) {
+          st.dqnStatus = ds;
+          document.getElementById("dqn-epsilon").textContent = (
+            ds.epsilon || 0
+          ).toFixed(3);
+          const ar = ds.avg_reward || 0;
+          const arel = document.getElementById("dqn-avg-reward");
+          arel.textContent = ar >= 0 ? "+" + ar.toFixed(3) : ar.toFixed(3);
+          arel.style.color =
+            ar > 0 ? "#00ff9d" : ar > -0.3 ? "#ffb300" : "#ff3b5c";
+          document.getElementById("kpi-steps").textContent = (
+            ds.step || 0
+          ).toLocaleString();
+          document.getElementById("dqn-mem-badge").textContent =
+            `mem: ${(ds.memory || 0).toLocaleString()}`;
+          if (ds.action_counts) updateActionDist(ds.action_counts);
 
-  document.getElementById('last-update').textContent =
-    `LAST UPDATE: ${new Date().toLocaleTimeString('en-GB', {hour12:false})}`;
-}
+          // Push reward chart
+          if (ds.step && ds.avg_reward !== undefined) {
+            const ts = new Date().toLocaleTimeString("en-GB", {
+              hour12: false,
+            });
+            pushChart(rewardChart, ts, ds.avg_reward, ds.avg_loss || 0);
+          }
+        }
+      }
 
-// Demo mode: inject fake data if controller is offline (for UI testing)
-function injectDemoData() {
-  if (state.online) return;
-  const dpids = ['0000000000000001', '0000000000000002', '0000000000000003', '0000000000000004'];
-  dpids.forEach((dpid, i) => {
-    state.switches[dpid] = {
-      bw_rx_mbps: 5  + Math.random() * 30,
-      bw_tx_mbps: 3  + Math.random() * 20,
-      latency_ms: 5  + Math.random() * 20,
-      jitter_ms:  0.5 + Math.random() * 5,
-      loss_pct:   Math.random() * 2,
-      reward:     (Math.random() - 0.5) * 0.8,
-      ts_iso:     new Date().toISOString(),
-    };
-  });
-  // Fake topology
-  state.topology.switches = dpids.map((d,i) => ({dpid:d, status:'active'}));
-  state.topology.links = [
-    {src_dpid: dpids[0], dst_dpid: dpids[1]},
-    {src_dpid: dpids[1], dst_dpid: dpids[2]},
-    {src_dpid: dpids[2], dst_dpid: dpids[3]},
-    {src_dpid: dpids[3], dst_dpid: dpids[0]},
-    {src_dpid: dpids[0], dst_dpid: dpids[2]},
-  ];
-  buildTopoNodes(state.topology);
+      function fmtBytes(b) {
+        if (!b) return "0 B";
+        if (b < 1024) return b + " B";
+        if (b < 1048576) return (b / 1024).toFixed(1) + " KB";
+        return (b / 1048576).toFixed(2) + " MB";
+      }
 
-  if (!state.selectedDpid) state.selectedDpid = dpids[0];
-  document.getElementById('kpi-switches').textContent = dpids.length;
-  const total = Object.values(state.switches).reduce((s,m) => s + m.bw_rx_mbps + m.bw_tx_mbps, 0);
-  document.getElementById('kpi-bw').textContent = total.toFixed(2);
-  document.getElementById('kpi-lat').textContent = '8.4';
-  document.getElementById('kpi-loss').textContent = '0.012';
-  document.getElementById('topo-overlay').style.display = 'none';
+      // ── Demo fallback ─────────────────────────────────────────────────
+      function injectDemo() {
+        if (st.ryuOnline) return;
+        const dpids = [
+          "0000000000000001",
+          "0000000000000002",
+          "0000000000000003",
+        ];
+        dpids.forEach((d, i) => {
+          st.switches[d] = {
+            bw_rx_mbps: 5 + Math.random() * 25,
+            bw_tx_mbps: 3 + Math.random() * 15,
+            latency_ms: 4 + Math.random() * 15,
+            jitter_ms: 0.5 + Math.random() * 4,
+            loss_pct: Math.random() * 1.5,
+            reward: (Math.random() - 0.4) * 0.8,
+            ts_iso: new Date().toISOString(),
+          };
+          st.predictions[d] = {
+            1: {
+              P_normal: 0.1 + Math.random() * 0.4,
+              P_warning: 0.2 + Math.random() * 0.3,
+              P_congested: Math.random() * 0.7,
+              cong_prob: Math.random() * 0.7,
+              pred_zone: "warning",
+            },
+          };
+        });
+        st.topology.switches = dpids.map((d) => ({
+          dpid: d,
+          status: "active",
+        }));
+        st.topology.links = [
+          { src_dpid: dpids[0], dst_dpid: dpids[1] },
+          { src_dpid: dpids[1], dst_dpid: dpids[2] },
+        ];
+        buildTopoNodes(st.topology);
+        if (!st.selectedDpid) st.selectedDpid = dpids[0];
+        document.getElementById("kpi-switches").textContent = dpids.length;
+        document.getElementById("topo-overlay").style.display = "none";
+        const bwRx = Object.values(st.switches).reduce(
+          (s, m) => s + (m.bw_rx_mbps || 0),
+          0,
+        );
+        const ts = new Date().toLocaleTimeString("en-GB", { hour12: false });
+        const maxPcong = Math.random() * 0.6;
+        pushChart(bwChart, ts, bwRx, bwRx * 0.7, maxPcong * 100);
+        pushChart(latChart, ts, 8 + Math.random() * 5, 0.8 + Math.random() * 2);
+        st.totalSamples++;
+        document.getElementById("ds-samples").textContent = st.totalSamples;
+        renderSwitchList();
+        updateGauges();
+      }
 
-  const first = Object.values(state.switches)[0];
-  pushChartData(new Date().toISOString(), first.bw_rx_mbps, first.bw_tx_mbps, first.latency_ms, first.jitter_ms);
-  state.totalSamples++;
-  document.getElementById('ds-samples').textContent = state.totalSamples;
-  renderSwitchList();
-  updateGauges();
-  renderEventLog([
-    {ts: new Date().toISOString(), category:'demo', message:'Demo mode: controller offline', level:'warning'},
-    {ts: new Date().toISOString(), category:'info',  message:'Connect Ryu controller to see live data', level:'info'},
-  ]);
-}
-
-// ── Start polling ──
-poll();
-setInterval(poll, POLL);
-
-// ── Demo fallback ──
-setTimeout(() => {
-  if (!state.online) injectDemoData();
-}, 1500);
-setInterval(() => {
-  if (!state.online) injectDemoData();
-}, POLL);
-</script>
-</body>
+      // ── Start ─────────────────────────────────────────────────────────
+      pollRyu();
+      pollDQN();
+      setInterval(pollRyu, POLL);
+      setInterval(pollDQN, POLL);
+      setTimeout(() => {
+        if (!st.ryuOnline) injectDemo();
+      }, 1500);
+      setInterval(() => {
+        if (!st.ryuOnline) injectDemo();
+      }, POLL);
+    </script>
+  </body>
 </html>
