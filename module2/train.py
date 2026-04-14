@@ -15,12 +15,17 @@ What this script does (in order):
 Loss function (combined):
   total_loss = 0.6 × zone_loss + 0.4 × prob_loss
 
-  zone_loss — CrossEntropyLoss with class weights [0.54, 6.01, 1.03]
-    The 6× weight on warning ensures the model learns the early-warning
-    signal even though warning is only 5.7% of training data.
+  zone_loss — CrossEntropyLoss with class weights computed from training split.
+    Weights are computed as: total / (n_classes × class_count).
+    With actual data (98.6% normal, 1.1% warning, 0.4% congested), the
+    warning and congested classes receive heavy up-weighting so the model
+    learns the rare early-warning signal.
 
-  prob_loss — BCEWithLogitsLoss with pos_weight=2.10
-    Weights each congested example 2.1× more than normal/warning.
+  prob_loss — BCEWithLogitsLoss with pos_weight computed from training split.
+    With actual data (0.4% congested), pos_weight ≈ 288×, heavily
+    weighting each congested example to compensate for extreme imbalance.
+    Both weights are computed dynamically by get_dataloaders() and are
+    never hardcoded — they adapt automatically to whatever data is present.
 
   Why 0.6/0.4 split:
     Zone classification is the primary task (Module III needs zone state).

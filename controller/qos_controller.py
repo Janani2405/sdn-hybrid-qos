@@ -174,6 +174,37 @@ LLDP_MAC_NEAREST_BRIDGE = '01:80:c2:00:00:0e'
 # REST API prefix
 REST_API_URL = '/qos/api/v1'
 
+# ─────────────────────────────────────────────────────────────────
+#  Mesh loop prevention — controller-side
+#
+#  Maps each switch NAME to the OF port numbers that are cross-links
+#  in the hybrid mesh topology.  These ports will receive priority-10
+#  DROP rules for broadcast/multicast on switch connect, preventing
+#  ARP flood loops BEFORE any host traffic starts.
+#
+#  Port numbers mirror exactly what topology.py assigns (link order).
+#  This table must stay in sync with topology.py's MESH_PORTS.
+# ─────────────────────────────────────────────────────────────────
+# Port 2 on every non-leaf switch (s2–s15) is the sibling cross-link.
+# Leaf switches (s16–s31) have no cross-links — only host ports.
+# Topology: depth=5, 31 switches, 32 hosts, binary hybrid mesh.
+MESH_PORTS_BY_NAME = {
+    's1':  [],
+    's2':  [2], 's3':  [2],
+    's4':  [2], 's5':  [2], 's6':  [2], 's7':  [2],
+    's8':  [2], 's9':  [2], 's10': [2], 's11': [2],
+    's12': [2], 's13': [2], 's14': [2], 's15': [2],
+    's16': [], 's17': [], 's18': [], 's19': [],
+    's20': [], 's21': [], 's22': [], 's23': [],
+    's24': [], 's25': [], 's26': [], 's27': [],
+    's28': [], 's29': [], 's30': [], 's31': [],
+}
+
+# dpid (int) → list of blocked port numbers
+# Built lazily the first time a switch connects by matching switch name
+# via the OVS datapath ID.  Populated in _features_handler.
+_MESH_PORTS_BY_DPID: dict = {}   # filled at runtime
+
 
 # ─────────────────────────────────────────────────────────────────
 #  CSV column definitions
@@ -459,6 +490,95 @@ class QoSController(app_manager.RyuApp):
 
         # ── Forwarding table ──────────────────────────────────────────────
         self.mac_to_port = {}           # { dpid -> { mac -> port } }
+        self._switch_ports = {}         # { dpid -> set(port_no) }  populated by OFPPortDescStatsReply
+        self._ports_lock   = threading.Lock()
+
+        # ── Proactive flow installer ──────────────────────────────────────
+        # Once all 18 switches connect, we install forwarding flows for
+        # every host pair using the static host table below.  This avoids
+        # reactive flooding entirely, which overwhelms the controller at scale.
+        self._proactive_done = False
+        self._proactive_lock = threading.Lock()
+
+        # Static host table — must match Mininet topology exactly.
+        # Format: (ip, mac, access_switch_dpid, access_port)
+        # access_port = the switch port that connects directly to this host.
+        # Mininet host ports are always port 1 and 2 (link order in build()).
+        # HOST_TABLE: (ip, mac, access_sw_dpid_int, port_on_sw_to_host)
+        # Leaf switches s16–s31, each with 2 hosts on ports 2 and 3.
+        # MAC format: 00:00:00:00:00:XX where XX = host number in hex.
+        self._HOST_TABLE = [
+            ('10.0.0.1',  '00:00:00:00:00:01', 16, 2), # h1  → s16 port2
+            ('10.0.0.2',  '00:00:00:00:00:02', 16, 3), # h2  → s16 port3
+            ('10.0.0.3',  '00:00:00:00:00:03', 17, 2), # h3  → s17 port2
+            ('10.0.0.4',  '00:00:00:00:00:04', 17, 3), # h4  → s17 port3
+            ('10.0.0.5',  '00:00:00:00:00:05', 18, 2), # h5  → s18 port2
+            ('10.0.0.6',  '00:00:00:00:00:06', 18, 3), # h6  → s18 port3
+            ('10.0.0.7',  '00:00:00:00:00:07', 19, 2), # h7  → s19 port2
+            ('10.0.0.8',  '00:00:00:00:00:08', 19, 3), # h8  → s19 port3
+            ('10.0.0.9',  '00:00:00:00:00:09', 20, 2), # h9  → s20 port2
+            ('10.0.0.10', '00:00:00:00:00:0a', 20, 3), # h10 → s20 port3
+            ('10.0.0.11', '00:00:00:00:00:0b', 21, 2), # h11 → s21 port2
+            ('10.0.0.12', '00:00:00:00:00:0c', 21, 3), # h12 → s21 port3
+            ('10.0.0.13', '00:00:00:00:00:0d', 22, 2), # h13 → s22 port2
+            ('10.0.0.14', '00:00:00:00:00:0e', 22, 3), # h14 → s22 port3
+            ('10.0.0.15', '00:00:00:00:00:0f', 23, 2), # h15 → s23 port2
+            ('10.0.0.16', '00:00:00:00:00:10', 23, 3), # h16 → s23 port3
+            ('10.0.0.17', '00:00:00:00:00:11', 24, 2), # h17 → s24 port2
+            ('10.0.0.18', '00:00:00:00:00:12', 24, 3), # h18 → s24 port3
+            ('10.0.0.19', '00:00:00:00:00:13', 25, 2), # h19 → s25 port2
+            ('10.0.0.20', '00:00:00:00:00:14', 25, 3), # h20 → s25 port3
+            ('10.0.0.21', '00:00:00:00:00:15', 26, 2), # h21 → s26 port2
+            ('10.0.0.22', '00:00:00:00:00:16', 26, 3), # h22 → s26 port3
+            ('10.0.0.23', '00:00:00:00:00:17', 27, 2), # h23 → s27 port2
+            ('10.0.0.24', '00:00:00:00:00:18', 27, 3), # h24 → s27 port3
+            ('10.0.0.25', '00:00:00:00:00:19', 28, 2), # h25 → s28 port2
+            ('10.0.0.26', '00:00:00:00:00:1a', 28, 3), # h26 → s28 port3
+            ('10.0.0.27', '00:00:00:00:00:1b', 29, 2), # h27 → s29 port2
+            ('10.0.0.28', '00:00:00:00:00:1c', 29, 3), # h28 → s29 port3
+            ('10.0.0.29', '00:00:00:00:00:1d', 30, 2), # h29 → s30 port2
+            ('10.0.0.30', '00:00:00:00:00:1e', 30, 3), # h30 → s30 port3
+            ('10.0.0.31', '00:00:00:00:00:1f', 31, 2), # h31 → s31 port2
+            ('10.0.0.32', '00:00:00:00:00:20', 31, 3), # h32 → s31 port3
+        ]
+
+        # Tree: each switch's uplink port (toward s1) and downlink ports
+        # Used by proactive installer to determine next-hop per switch.
+        # Format: dpid -> { dst_access_dpid -> out_port }
+        # Built from static topology knowledge.
+        self._NEXT_HOP = {
+            1: {16: 1, 17: 1, 18: 1, 19: 1, 20: 1, 21: 1, 22: 1, 23: 1, 24: 2, 25: 2, 26: 2, 27: 2, 28: 2, 29: 2, 30: 2, 31: 2},
+            2: {16: 3, 17: 3, 18: 3, 19: 3, 20: 4, 21: 4, 22: 4, 23: 4, 24: 1, 25: 1, 26: 1, 27: 1, 28: 1, 29: 1, 30: 1, 31: 1},
+            3: {16: 1, 17: 1, 18: 1, 19: 1, 20: 1, 21: 1, 22: 1, 23: 1, 24: 3, 25: 3, 26: 3, 27: 3, 28: 4, 29: 4, 30: 4, 31: 4},
+            4: {16: 3, 17: 3, 18: 4, 19: 4, 20: 1, 21: 1, 22: 1, 23: 1, 24: 1, 25: 1, 26: 1, 27: 1, 28: 1, 29: 1, 30: 1, 31: 1},
+            5: {16: 1, 17: 1, 18: 1, 19: 1, 20: 3, 21: 3, 22: 4, 23: 4, 24: 1, 25: 1, 26: 1, 27: 1, 28: 1, 29: 1, 30: 1, 31: 1},
+            6: {16: 1, 17: 1, 18: 1, 19: 1, 20: 1, 21: 1, 22: 1, 23: 1, 24: 3, 25: 3, 26: 4, 27: 4, 28: 1, 29: 1, 30: 1, 31: 1},
+            7: {16: 1, 17: 1, 18: 1, 19: 1, 20: 1, 21: 1, 22: 1, 23: 1, 24: 1, 25: 1, 26: 1, 27: 1, 28: 3, 29: 3, 30: 4, 31: 4},
+            8: {16: 3, 17: 4, 18: 1, 19: 1, 20: 1, 21: 1, 22: 1, 23: 1, 24: 1, 25: 1, 26: 1, 27: 1, 28: 1, 29: 1, 30: 1, 31: 1},
+            9: {16: 1, 17: 1, 18: 3, 19: 4, 20: 1, 21: 1, 22: 1, 23: 1, 24: 1, 25: 1, 26: 1, 27: 1, 28: 1, 29: 1, 30: 1, 31: 1},
+            10: {16: 1, 17: 1, 18: 1, 19: 1, 20: 3, 21: 4, 22: 1, 23: 1, 24: 1, 25: 1, 26: 1, 27: 1, 28: 1, 29: 1, 30: 1, 31: 1},
+            11: {16: 1, 17: 1, 18: 1, 19: 1, 20: 1, 21: 1, 22: 3, 23: 4, 24: 1, 25: 1, 26: 1, 27: 1, 28: 1, 29: 1, 30: 1, 31: 1},
+            12: {16: 1, 17: 1, 18: 1, 19: 1, 20: 1, 21: 1, 22: 1, 23: 1, 24: 3, 25: 4, 26: 1, 27: 1, 28: 1, 29: 1, 30: 1, 31: 1},
+            13: {16: 1, 17: 1, 18: 1, 19: 1, 20: 1, 21: 1, 22: 1, 23: 1, 24: 1, 25: 1, 26: 3, 27: 4, 28: 1, 29: 1, 30: 1, 31: 1},
+            14: {16: 1, 17: 1, 18: 1, 19: 1, 20: 1, 21: 1, 22: 1, 23: 1, 24: 1, 25: 1, 26: 1, 27: 1, 28: 3, 29: 4, 30: 1, 31: 1},
+            15: {16: 1, 17: 1, 18: 1, 19: 1, 20: 1, 21: 1, 22: 1, 23: 1, 24: 1, 25: 1, 26: 1, 27: 1, 28: 1, 29: 1, 30: 3, 31: 4},
+            16: {16: None, 17: 1, 18: 1, 19: 1, 20: 1, 21: 1, 22: 1, 23: 1, 24: 1, 25: 1, 26: 1, 27: 1, 28: 1, 29: 1, 30: 1, 31: 1},
+            17: {16: 1, 17: None, 18: 1, 19: 1, 20: 1, 21: 1, 22: 1, 23: 1, 24: 1, 25: 1, 26: 1, 27: 1, 28: 1, 29: 1, 30: 1, 31: 1},
+            18: {16: 1, 17: 1, 18: None, 19: 1, 20: 1, 21: 1, 22: 1, 23: 1, 24: 1, 25: 1, 26: 1, 27: 1, 28: 1, 29: 1, 30: 1, 31: 1},
+            19: {16: 1, 17: 1, 18: 1, 19: None, 20: 1, 21: 1, 22: 1, 23: 1, 24: 1, 25: 1, 26: 1, 27: 1, 28: 1, 29: 1, 30: 1, 31: 1},
+            20: {16: 1, 17: 1, 18: 1, 19: 1, 20: None, 21: 1, 22: 1, 23: 1, 24: 1, 25: 1, 26: 1, 27: 1, 28: 1, 29: 1, 30: 1, 31: 1},
+            21: {16: 1, 17: 1, 18: 1, 19: 1, 20: 1, 21: None, 22: 1, 23: 1, 24: 1, 25: 1, 26: 1, 27: 1, 28: 1, 29: 1, 30: 1, 31: 1},
+            22: {16: 1, 17: 1, 18: 1, 19: 1, 20: 1, 21: 1, 22: None, 23: 1, 24: 1, 25: 1, 26: 1, 27: 1, 28: 1, 29: 1, 30: 1, 31: 1},
+            23: {16: 1, 17: 1, 18: 1, 19: 1, 20: 1, 21: 1, 22: 1, 23: None, 24: 1, 25: 1, 26: 1, 27: 1, 28: 1, 29: 1, 30: 1, 31: 1},
+            24: {16: 1, 17: 1, 18: 1, 19: 1, 20: 1, 21: 1, 22: 1, 23: 1, 24: None, 25: 1, 26: 1, 27: 1, 28: 1, 29: 1, 30: 1, 31: 1},
+            25: {16: 1, 17: 1, 18: 1, 19: 1, 20: 1, 21: 1, 22: 1, 23: 1, 24: 1, 25: None, 26: 1, 27: 1, 28: 1, 29: 1, 30: 1, 31: 1},
+            26: {16: 1, 17: 1, 18: 1, 19: 1, 20: 1, 21: 1, 22: 1, 23: 1, 24: 1, 25: 1, 26: None, 27: 1, 28: 1, 29: 1, 30: 1, 31: 1},
+            27: {16: 1, 17: 1, 18: 1, 19: 1, 20: 1, 21: 1, 22: 1, 23: 1, 24: 1, 25: 1, 26: 1, 27: None, 28: 1, 29: 1, 30: 1, 31: 1},
+            28: {16: 1, 17: 1, 18: 1, 19: 1, 20: 1, 21: 1, 22: 1, 23: 1, 24: 1, 25: 1, 26: 1, 27: 1, 28: None, 29: 1, 30: 1, 31: 1},
+            29: {16: 1, 17: 1, 18: 1, 19: 1, 20: 1, 21: 1, 22: 1, 23: 1, 24: 1, 25: 1, 26: 1, 27: 1, 28: 1, 29: None, 30: 1, 31: 1},
+            30: {16: 1, 17: 1, 18: 1, 19: 1, 20: 1, 21: 1, 22: 1, 23: 1, 24: 1, 25: 1, 26: 1, 27: 1, 28: 1, 29: 1, 30: None, 31: 1},
+            31: {16: 1, 17: 1, 18: 1, 19: 1, 20: 1, 21: 1, 22: 1, 23: 1, 24: 1, 25: 1, 26: 1, 27: 1, 28: 1, 29: 1, 30: 1, 31: None},
+        }
 
         # ── Switch registry ───────────────────────────────────────────────
         self._datapaths = {}            # dpid -> datapath
@@ -593,7 +713,7 @@ class QoSController(app_manager.RyuApp):
         self._log_event("switch",
             f"Switch {dpid_lib.dpid_to_str(dpid)} connected", "success")
 
-        # Table-miss rule
+        # Table-miss rule (priority 0 — lowest, catch-all)
         match   = parser.OFPMatch()
         actions = [parser.OFPActionOutput(ofp.OFPP_CONTROLLER,
                                           ofp.OFPCML_NO_BUFFER)]
@@ -602,10 +722,103 @@ class QoSController(app_manager.RyuApp):
             datapath=dp, priority=0, match=match, instructions=inst,
         ))
 
+        # Populate port registry from switch features — synchronous, no reply needed.
+        # In OF1.3 OFPSwitchFeatures no longer carries port list in the message
+        # body, so we send OFPPortDescStatsRequest and handle it in CONFIG_DISPATCHER.
+        # We ALSO store the mesh ports immediately using the static MESH_PORTS_BY_NAME
+        # table so _safe_flood() has correct data before the first PacketIn arrives.
+        sw_name_feat = f's{dpid}'
+        mesh_pts = MESH_PORTS_BY_NAME.get(sw_name_feat, [])
+        if mesh_pts:
+            _MESH_PORTS_BY_DPID[dpid] = list(mesh_pts)
+
+        # Request port list — reply handled by _port_desc_handler (CONFIG_DISPATCHER).
+        req = parser.OFPPortDescStatsRequest(dp, 0)
+        dp.send_msg(req)
+
+        # Mesh loop prevention — install BEFORE any host traffic arrives.
+        # Priority 10 DROP rules on cross-link ports for broadcast/multicast.
+        # Must come AFTER the table-miss rule so it takes precedence (pri 10 > 0).
+        self._install_loop_prevention(dp)
+
+    def _install_loop_prevention(self, dp):
+        """
+        Install priority-10 DROP rules for broadcast and multicast on every
+        mesh cross-link port for this switch.
+
+        Called immediately after the table-miss rule so these rules are in
+        place before any host traffic arrives.  Priority 10 beats the
+        table-miss (priority 0) but does not conflict with unicast learning
+        flows (priority 1, specific eth_dst MACs).
+
+        FIX NOTES:
+          - DROP in OF1.3 = OFPFlowMod with OFPFC_ADD + an explicit
+            OFPInstructionActions(OFPIT_APPLY_ACTIONS, []) (empty action list).
+            Passing instructions=[] directly is rejected by some OVS builds.
+          - Switch name derived directly from dpid int (s1…s18) — no subprocess.
+          - Multicast mask match: (value, mask) tuple where mask LSB=1 catches
+            all multicast MACs (01:xx:xx:xx:xx:xx).
+        """
+        dpid   = dp.id
+        ofp    = dp.ofproto
+        parser = dp.ofproto_parser
+
+        # Mininet assigns dpid=1->s1, dpid=2->s2, ... dpid=18->s18
+        sw_name    = f's{dpid}'
+        mesh_ports = MESH_PORTS_BY_NAME.get(sw_name, [])
+
+        if not mesh_ports:
+            self.logger.debug(
+                'Loop prevention: %s (dpid=0x%016x) — no mesh ports to block',
+                sw_name, dpid,
+            )
+            return
+
+        def _drop_flow(match):
+            empty_inst = [parser.OFPInstructionActions(
+                ofp.OFPIT_APPLY_ACTIONS, []
+            )]
+            dp.send_msg(parser.OFPFlowMod(
+                datapath=dp,
+                command=ofp.OFPFC_ADD,
+                priority=10,
+                match=match,
+                instructions=empty_inst,
+                idle_timeout=0,
+                hard_timeout=0,
+            ))
+
+        for port_no in mesh_ports:
+            # Rule 1: drop broadcast (ff:ff:ff:ff:ff:ff)
+            _drop_flow(parser.OFPMatch(
+                in_port=port_no,
+                eth_dst='ff:ff:ff:ff:ff:ff',
+            ))
+            # Rule 2: drop all multicast (01:xx:xx:xx:xx:xx)
+            _drop_flow(parser.OFPMatch(
+                in_port=port_no,
+                eth_dst=('01:00:00:00:00:00', '01:00:00:00:00:00'),
+            ))
+            self.logger.info(
+                'Loop prevention: %s port %d — broadcast + multicast DROP installed',
+                sw_name, port_no,
+            )
+
+        _MESH_PORTS_BY_DPID[dpid] = mesh_ports
+        self.logger.info(
+            'Loop prevention complete: %s (dpid=0x%016x) — %d port(s) blocked: %s',
+            sw_name, dpid, len(mesh_ports), mesh_ports,
+        )
+
     @set_ev_cls(ofp_event.EventOFPStateChange, [MAIN_DISPATCHER, DEAD_DISPATCHER])
     def _state_change_handler(self, ev):
         dp   = ev.datapath
+        # Guard: on some disconnect events datapath or its id can be None
+        if dp is None:
+            return
         dpid = dp.id
+        if dpid is None:
+            return
 
         if ev.state == MAIN_DISPATCHER:
             with self._dp_lock:
@@ -677,30 +890,100 @@ class QoSController(app_manager.RyuApp):
         if eth.ethertype == ether_types.ETH_TYPE_LLDP:
             return
 
-        # ── L2 learning switch  (unchanged from original) ─────────────────
+        # ── L2 learning switch — mesh-aware flood ────────────────────
+        # KEY FIX: When the destination MAC is unknown, OFPP_FLOOD is unsafe
+        # because it includes the mesh cross-link ports whose broadcast frames
+        # are silently DROPped by the priority-10 rules we installed.  The
+        # flooded packet never reaches the destination, no reply comes back,
+        # and transit switches (s1, s5, s10) never learn the MAC.  We use
+        # _safe_flood() instead, which enumerates only the tree ports.
         dst  = eth.dst
         src  = eth.src
-        dpid = datapath.id
+        dpid = datapath.id if datapath else None
+        if dpid is None:
+            return
 
         self.mac_to_port.setdefault(dpid, {})
         self.mac_to_port[dpid][src] = in_port
-        out_port = self.mac_to_port[dpid].get(dst, ofproto.OFPP_FLOOD)
-        actions  = [parser.OFPActionOutput(out_port)]
+        out_port = self.mac_to_port[dpid].get(dst)  # None = unknown
 
-        if out_port != ofproto.OFPP_FLOOD:
-            match = parser.OFPMatch(in_port=in_port, eth_dst=dst, eth_src=src)
+        if out_port is not None:
+            # Known destination — unicast, install flow
+            actions = [parser.OFPActionOutput(out_port)]
+            match   = parser.OFPMatch(in_port=in_port, eth_dst=dst, eth_src=src)
             if msg.buffer_id != ofproto.OFP_NO_BUFFER:
                 self._add_flow(datapath, 1, match, actions, msg.buffer_id)
                 return
             else:
                 self._add_flow(datapath, 1, match, actions)
+            data = raw_data if msg.buffer_id == ofproto.OFP_NO_BUFFER else None
+            out  = parser.OFPPacketOut(
+                datapath=datapath, buffer_id=msg.buffer_id,
+                in_port=in_port, actions=actions, data=data,
+            )
+            datapath.send_msg(out)
+        else:
+            # Unknown destination — safe flood skipping mesh cross-link ports
+            flood_actions = self._safe_flood(datapath, in_port, parser)
+            if not flood_actions:
+                return
+            data = raw_data if msg.buffer_id == ofproto.OFP_NO_BUFFER else None
+            out  = parser.OFPPacketOut(
+                datapath=datapath, buffer_id=ofproto.OFP_NO_BUFFER,
+                in_port=in_port, actions=flood_actions, data=data,
+            )
+            datapath.send_msg(out)
 
-        data = raw_data if msg.buffer_id == ofproto.OFP_NO_BUFFER else None
-        out  = parser.OFPPacketOut(
-            datapath=datapath, buffer_id=msg.buffer_id,
-            in_port=in_port, actions=actions, data=data
+    # =========================================================================
+    #  Port descriptor reply — discover all ports on each switch
+    # =========================================================================
+
+    @set_ev_cls(ofp_event.EventOFPPortDescStatsReply, [CONFIG_DISPATCHER, MAIN_DISPATCHER])
+    def _port_desc_handler(self, ev):
+        dpid  = ev.msg.datapath.id
+        ports = set()
+        for p in ev.msg.body:
+            if p.port_no not in SKIP_PORTS:
+                ports.add(p.port_no)
+        with self._ports_lock:
+            self._switch_ports[dpid] = ports
+        self.logger.debug(
+            'Port discovery: dpid=0x%016x  ports=%s', dpid, sorted(ports)
         )
-        datapath.send_msg(out)
+
+    def _safe_flood(self, datapath, in_port, parser):
+        """
+        Flood to all tree ports on this switch, skipping:
+          - in_port (ingress)
+          - mesh cross-link ports (already DROP-protected, but skip anyway
+            to avoid PacketIn churn from unicast floods on those ports)
+
+        If _switch_ports not yet populated (port-desc reply still in flight),
+        falls back to OFPP_FLOOD — the DROP rules will absorb any loops.
+        """
+        dpid = datapath.id
+        with self._ports_lock:
+            all_ports = self._switch_ports.get(dpid)
+        blocked = set(_MESH_PORTS_BY_DPID.get(dpid, []))
+        self.logger.info(
+            '_safe_flood dpid=0x%016x in_port=%s  known_ports=%s  blocked=%s',
+            dpid, in_port,
+            sorted(all_ports) if all_ports else None,
+            sorted(blocked),
+        )
+        if all_ports is None:
+            # Port list not yet received — use OFPP_FLOOD; mesh DROPs handle loops
+            self.logger.warning('_safe_flood dpid=0x%016x: port list PENDING — using OFPP_FLOOD', dpid)
+            return [parser.OFPActionOutput(datapath.ofproto.OFPP_FLOOD)]
+        actions = []
+        for p in sorted(all_ports):
+            if p == in_port or p in blocked:
+                continue
+            actions.append(parser.OFPActionOutput(p))
+        if not actions:
+            # Extreme fallback: all non-ingress ports are blocked — use flood
+            return [parser.OFPActionOutput(datapath.ofproto.OFPP_FLOOD)]
+        return actions
 
     # =========================================================================
     #  Flow stats reply  (for REST API flow table)

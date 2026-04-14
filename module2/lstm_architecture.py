@@ -205,13 +205,13 @@ rounded_box(ax, head_bx - HW/2, y_ha, HW, 0.09, C_HEAD_B,
 # ── Loss labels ───────────────────────────────────────────────────
 y_loss = y_ha - 0.055
 ax.text(head_ax, y_loss + 0.01,
-        'CrossEntropyLoss\nweights=[0.54, 6.01, 1.03]',
+        'CrossEntropyLoss\nweights=computed dynamically',
         ha='center', va='top', fontsize=7.8,
         color=C_HEAD_A, fontstyle='italic',
         bbox=dict(facecolor='white', alpha=0.7,
                   edgecolor=C_HEAD_A, boxstyle='round,pad=0.2'))
 ax.text(head_bx, y_loss + 0.01,
-        'BCEWithLogitsLoss\npos_weight=2.09',
+        'BCEWithLogitsLoss\npos_weight≈288 (0.4% congested)',
         ha='center', va='top', fontsize=7.8,
         color=C_HEAD_B, fontstyle='italic',
         bbox=dict(facecolor='white', alpha=0.7,

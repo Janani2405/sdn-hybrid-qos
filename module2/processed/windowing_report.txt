@@ -4,38 +4,38 @@
 =================================================================
 
 [Step 1] Loading preprocessed data ...
-  X          : (74336, 17)
-  y_binary   : (74336,)
-  y_zone     : (74336,)
-  y_util     : (74336,)
-  port_index : (74336, 2)
+  X          : (147400, 17)
+  y_binary   : (147400,)
+  y_zone     : (147400,)
+  y_util     : (147400,)
+  port_index : (147400, 2)
 
 [Step 2] Grouping rows by (dpid, port_no) ...
-  Total unique (dpid, port_no) pairs: 92
-  Rows per group — min:808  max:808  mean:808.0
+  Total unique (dpid, port_no) pairs: 106
+  Rows per group — min:1390  max:1391  mean:1390.6
   Row indices in time order within all groups: True
 
 [Step 3] Sliding windows (seq_len=10, stride=1) ...
 
 [Step 4] Stacking into arrays ...
-  X_windows  : (73508, 10, 17)  (47.7 MB)
-  y_binary_w : (73508,)
-  y_zone_w   : (73508,)
-  y_util_w   : (73508,)
+  X_windows  : (146446, 10, 17)  (95.0 MB)
+  y_binary_w : (146446,)
+  y_zone_w   : (146446,)
+  y_util_w   : (146446,)
 
 [Step 5] Verifying label distributions in windowed dataset ...
-  Binary — total windows : 73508
-  Binary — not congested : 49437 (67.3%)
-  Binary — congested     : 24071 (32.7%)
+  Binary — total windows : 146446
+  Binary — not congested : 140471 (95.9%)
+  Binary — congested     : 5975 (4.1%)
   Zone distribution:
-    0 (normal): 45266 (61.6%)
-    1 (warning): 4171 (5.7%)
-    2 (congested): 24071 (32.7%)
-  Utilization — mean:42.32  max:100.00  min:0.00
+    0 (normal): 135404 (92.5%)
+    1 (warning): 5067 (3.5%)
+    2 (congested): 5975 (4.1%)
+  Utilization — mean:11.39  max:100.00  min:0.00
 
 [Step 6] Sanity checks ...
-  Shape check passed: (N=73508, seq=10, features=17)
-  Window count check passed: 73508 == 73508
+  Shape check passed: (N=146446, seq=10, features=17)
+  Window count check passed: 146446 == 146446
   NaN in X_windows: False
   Inf in X_windows: False
   NaN/Inf check passed

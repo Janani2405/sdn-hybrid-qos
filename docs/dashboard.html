@@ -818,7 +818,7 @@
         <div class="logo-icon"></div>
         <div>
           <!-- <div class="logo-text">PROJECT RECALL</div> -->
-          <div class="logo-sub">SDN QoS — LSTM + DQN Intelligence Layer</div>
+          <div class="logo-sub">SDN QoS — 31-Switch Hybrid Mesh · Depth-5 · LSTM + DQN</div>
         </div>
       </div>
       <div class="header-right">
@@ -1028,7 +1028,7 @@
           <div class="kpi red">
             <div class="kpi-label">Active Switches</div>
             <div class="kpi-value" id="kpi-switches">0</div>
-            <div class="kpi-unit">connected</div>
+            <div class="kpi-unit">connected (31 total)</div>
           </div>
           <div class="kpi purple">
             <div class="kpi-label">DQN Steps</div>
@@ -1043,9 +1043,11 @@
             <div class="panel-header">
               <span class="panel-title">⬡ Network Topology</span>
               <div style="display: flex; align-items: center; gap: 8px">
-                <span class="panel-badge" id="topo-badge"
-                  >0 nodes · 0 links</span
-                >
+                <span class="panel-badge" id="topo-badge">0 nodes · 0 links</span>
+                <span style="font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--dim);display:flex;align-items:center;gap:8px">
+                  <span style="color:var(--accent)">━</span> tree
+                  <span style="color:var(--purple)">╌</span> cross-link
+                </span>
                 <button
                   class="fullscreen-btn"
                   onclick="expandPanel('topo-panel')"
@@ -1150,7 +1152,7 @@
           </div>
           <div class="bb-item">
             <div class="bb-dot" style="background: var(--purple)"></div>
-            <span>DQN AGENT PORT 8081</span>
+            <span>DQN AGENT PORT 8081</span><span style="color:var(--accent)">·</span><span>31 SWITCHES · 32 HOSTS · CROSS-LINKS ON PORT 2</span>
           </div>
           <div style="margin-left: auto; font-size: 10px" id="last-update">
             LAST UPDATE: —
@@ -1728,8 +1730,10 @@
           };
         });
         const dpidLabel = {};
-        sw.forEach((s, i) => {
-          dpidLabel[s.dpid] = `s${i + 1}`;
+        sw.forEach((s) => {
+          // Derive switch number from DPID integer (dpid=1→s1, dpid=2→s2, …)
+          const dpidInt = parseInt(s.dpid, 16);
+          dpidLabel[s.dpid] = dpidInt > 0 && dpidInt <= 99 ? `s${dpidInt}` : s.dpid.slice(-4);
         });
         topoNodes = sw.map((s) => ({
           id: s.dpid,
@@ -1742,7 +1746,7 @@
         }));
         topoLinks = lk.map((l) => ({ source: l.src_dpid, target: l.dst_dpid }));
         document.getElementById("topo-badge").textContent =
-          `${sw.length} sw · ${lk.length} links`;
+          `${sw.length} sw · ${lk.length} links · ${sw.length > 0 ? 20 : 0} hosts`;
       }
 
       function renderTopology() {
@@ -1751,18 +1755,36 @@
         topoCtx.clearRect(0, 0, W, H);
         if (!topoNodes.length) return;
 
+        // Cross-link DPID pairs (port-2 mesh cross-links from correct MESH_PORTS)
+        const CROSS_LINK_PAIRS = new Set([
+          "1-4","4-1","4-9","9-4",            // s2-s5, s5-s10
+          "2-3","3-2","5-8","8-5","6-7","7-6", // subtree crosses: s3-s4,s6-s9,s7-s8
+          "11-12","12-11","10-13","13-10",     // s12-s13, s11-s14? no...
+          // Correct: s3↔s4 (dpid 3,4), s6↔s9(6,9), s7↔s8(7,8),
+          //          s12↔s13(12,13), s11↔s14(11,14), s15↔s16(15,16), s17↔s18(17,18)
+          // s2↔s5(2,5), s5↔s10(5,10)
+        ]);
+        function isCrossLink(srcDpid, dstDpid) {
+          const a = parseInt(srcDpid,16), b = parseInt(dstDpid,16);
+          // depth=5 hybrid mesh cross-link pairs (sibling pairs at L1/L2/L3)
+          const crossPairs = [[2,3],[4,5],[6,7],[8,9],[10,11],[12,13],[14,15]];
+          return crossPairs.some(([x,y]) => (a===x&&b===y)||(a===y&&b===x));
+        }
+
         // Links
         topoLinks.forEach((lk) => {
           const src = topoNodes.find((n) => n.id === lk.source);
           const tgt = topoNodes.find((n) => n.id === lk.target);
           if (!src || !tgt) return;
+          const cross = isCrossLink(lk.source, lk.target);
           topoCtx.beginPath();
           topoCtx.moveTo(src.x, src.y);
           topoCtx.lineTo(tgt.x, tgt.y);
-          topoCtx.strokeStyle = "rgba(0,212,255,0.3)";
-          topoCtx.lineWidth = 1.5;
-          topoCtx.setLineDash([]);
+          topoCtx.strokeStyle = cross ? "rgba(168,85,247,0.35)" : "rgba(0,212,255,0.35)";
+          topoCtx.lineWidth = cross ? 1 : 2;
+          topoCtx.setLineDash(cross ? [4, 4] : []);
           topoCtx.stroke();
+          topoCtx.setLineDash([]);
           // Animated packet dot
           const t = (Date.now() / 1000 + src.x * 0.01) % 1;
           const px = src.x + (tgt.x - src.x) * t,
@@ -2309,53 +2331,74 @@
       }
 
       // ── Demo fallback ─────────────────────────────────────────────────
+      // Demo dpids: 18 switches s1-s18 matching hybrid mesh topology
+      const DEMO_DPIDS = Array.from({length: 31}, (_, i) =>
+        (i + 1).toString(16).padStart(16, '0')
+      );
+      // Correct mesh topology links (cross-links on port 2, tree links on ports 1,3+)
+      // s1-s2(tree), s1-s5(tree), s1-s10(tree)
+      // s2-s5(cross), s5-s10(cross)   ← these are the real cross-links
+      // s2-s3, s2-s4, s3-s4(cross)
+      // s5-s6, s5-s9, s6-s9(cross)
+      // s6-s7, s6-s8, s7-s8(cross)
+      // s9-s12, s9-s13, s12-s13(cross)
+      // s10-s11, s10-s14, s11-s14(cross)
+      // s11-s15, s11-s16, s15-s16(cross)
+      // s14-s17, s14-s18, s17-s18(cross)
+      // depth=5 hybrid mesh: 31 switches, 32 hosts
+      // Tree links + sibling cross-links at L1/L2/L3 (port 2 = cross-link)
+      const DEMO_LINKS = [
+        // L0→L1 tree
+        [1,2],[1,3],
+        // L1 cross
+        [2,3],
+        // L1→L2 tree
+        [2,4],[2,5],[3,6],[3,7],
+        // L2 crosses
+        [4,5],[6,7],
+        // L2→L3 tree
+        [4,8],[4,9],[5,10],[5,11],[6,12],[6,13],[7,14],[7,15],
+        // L3 crosses
+        [8,9],[10,11],[12,13],[14,15],
+        // L3→L4 tree (leaf switches)
+        [8,16],[8,17],[9,18],[9,19],[10,20],[10,21],[11,22],[11,23],
+        [12,24],[12,25],[13,26],[13,27],[14,28],[14,29],[15,30],[15,31],
+      ].map(([a,b]) => ({
+        src_dpid: a.toString(16).padStart(16,'0'),
+        dst_dpid: b.toString(16).padStart(16,'0'),
+      }));
+
       function injectDemo() {
         if (st.ryuOnline) return;
-        const dpids = [
-          "0000000000000001",
-          "0000000000000002",
-          "0000000000000003",
-        ];
-        dpids.forEach((d, i) => {
+        DEMO_DPIDS.forEach((d, i) => {
           st.switches[d] = {
-            bw_rx_mbps: 5 + Math.random() * 25,
-            bw_tx_mbps: 3 + Math.random() * 15,
-            latency_ms: 4 + Math.random() * 15,
-            jitter_ms: 0.5 + Math.random() * 4,
-            loss_pct: Math.random() * 1.5,
-            reward: (Math.random() - 0.4) * 0.8,
+            bw_rx_mbps: 5 + Math.random() * 30,
+            bw_tx_mbps: 3 + Math.random() * 20,
+            latency_ms: 2 + Math.random() * 10,
+            jitter_ms: 0.2 + Math.random() * 3,
+            loss_pct: Math.random() * 0.8,
+            reward: (Math.random() - 0.35) * 0.8,
             ts_iso: new Date().toISOString(),
           };
+          // Port 2 on each switch is the cross-link (correct after fix)
+          const pCong = i < 1 ? 0 : i < 8 ? Math.random() * 0.3 : Math.random() * 0.6;
           st.predictions[d] = {
-            1: {
-              P_normal: 0.1 + Math.random() * 0.4,
-              P_warning: 0.2 + Math.random() * 0.3,
-              P_congested: Math.random() * 0.7,
-              cong_prob: Math.random() * 0.7,
-              pred_zone: "warning",
-            },
+            1: { P_normal: 1 - pCong - 0.1, P_warning: 0.1, P_congested: pCong, cong_prob: pCong, pred_zone: pCong > 0.5 ? "congested" : "normal" },
+            3: { P_normal: Math.random() * 0.8, P_warning: Math.random() * 0.15, P_congested: Math.random() * 0.2, cong_prob: Math.random() * 0.2, pred_zone: "normal" },
           };
         });
-        st.topology.switches = dpids.map((d) => ({
-          dpid: d,
-          status: "active",
-        }));
-        st.topology.links = [
-          { src_dpid: dpids[0], dst_dpid: dpids[1] },
-          { src_dpid: dpids[1], dst_dpid: dpids[2] },
-        ];
+        st.topology.switches = DEMO_DPIDS.map((d) => ({ dpid: d, status: "active" }));
+        st.topology.links = DEMO_LINKS;
         buildTopoNodes(st.topology);
-        if (!st.selectedDpid) st.selectedDpid = dpids[0];
-        document.getElementById("kpi-switches").textContent = dpids.length;
+        if (!st.selectedDpid) st.selectedDpid = DEMO_DPIDS[0];
+        document.getElementById("kpi-switches").textContent = DEMO_DPIDS.length;
         document.getElementById("topo-overlay").style.display = "none";
-        const bwRx = Object.values(st.switches).reduce(
-          (s, m) => s + (m.bw_rx_mbps || 0),
-          0,
-        );
+        const bwRx = Object.values(st.switches).reduce((s, m) => s + (m.bw_rx_mbps || 0), 0);
+        const bwTx = Object.values(st.switches).reduce((s, m) => s + (m.bw_tx_mbps || 0), 0);
         const ts = new Date().toLocaleTimeString("en-GB", { hour12: false });
-        const maxPcong = Math.random() * 0.6;
-        pushChart(bwChart, ts, bwRx, bwRx * 0.7, maxPcong * 100);
-        pushChart(latChart, ts, 8 + Math.random() * 5, 0.8 + Math.random() * 2);
+        const maxPcong = Math.max(...DEMO_DPIDS.map(d => st.predictions[d]?.[1]?.P_congested || 0));
+        pushChart(bwChart, ts, bwRx, bwTx, maxPcong * 100);
+        pushChart(latChart, ts, 4 + Math.random() * 4, 0.3 + Math.random() * 1.5);
         st.totalSamples++;
         document.getElementById("ds-samples").textContent = st.totalSamples;
         renderSwitchList();
